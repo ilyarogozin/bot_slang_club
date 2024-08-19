@@ -10,3 +10,4 @@ Bot for English slang club channel in telegram. Можно посмотреть 
 - SQLAlchemy
 - python-telegram-bot
 - PostgreSQL
+- APScheduler
