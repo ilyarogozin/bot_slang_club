@@ -1,2 +1,12 @@
 # bot_slang_club
-Bot for English slang club channel in telegram
+Bot for English slang club channel in telegram. Можно посмотреть @Sensei_for_real_bot (https://t.me/Sensei_for_real_bot)
+## Описание:
+Коммерческий проект для сленг-клуба(канал в телеграме) по английскому языку. Бот заносит в базу данных(Postgres) телефоны пользователей, оплативших подписку на сайте(на Tilda), данные об оплате приходят на webhook. Создаёт ссылки для вступления в канал, собирает отзывы, оповещает о сроке действия подписки и привязанном номере телефона. Также есть много менеджерских команд и отложенных задач(APScheduler).
+
+Бот развернут на сервере с веб-сервером gunicorn и reverse-proxy nginx, настроен вебхук для получения уведомлений от платежного сервиса, куплен домен и настроен SSL сертификат.
+### Технологии:
+- Python 3.10
+- Flask
+- SQLAlchemy
+- python-telegram-bot
+- PostgreSQL
