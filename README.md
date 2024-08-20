@@ -11,3 +11,4 @@ Bot for English slang club channel in telegram. Можно посмотреть 
 - python-telegram-bot
 - PostgreSQL
 - APScheduler
+- Pandas

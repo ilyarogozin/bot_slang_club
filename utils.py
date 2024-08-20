@@ -114,7 +114,7 @@ def check_user_in_channel(context: CallbackContext, user_id: int, chat_id: str) 
     try:
         member = context.bot.get_chat_member(
             chat_id=chat_id, user_id=user_id)
-        if member.status in ["member", "administrator", "creator"]:
+        if member.status in {"member", "administrator", "creator"}:
             return True
     except Exception as error:
         logger.warning(f"Пользователь не является участником канала: {error}")

@@ -114,14 +114,14 @@ def handle_text(update: Update, context: CallbackContext) -> None:
         user_text = update.message.text
         # Если ждем отзыв
         if context.user_data.get("awaiting_review"):
-            if user_text in [
+            if user_text in {
                 "-",
                 "Получить ссылку 🏁",
                 "Срок действия подписки 🕑",
                 "Показать привязанный номер 📲",
                 "Оставить отзыв ✍🏼",
                 "Техническая поддержка ⚙️",
-            ]:
+            }:
                 update.message.reply_text("Отзыв отменён.")
             else:
                 with create_session() as session:
