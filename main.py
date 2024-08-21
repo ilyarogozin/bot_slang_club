@@ -34,7 +34,7 @@ from utils import logger, update_subscription, create_session
 
 
 app = Flask(__name__)
-updater = Updater(TOKEN, use_context=True)
+updater = Updater(TOKEN, use_context=True, request_kwargs={'connect_timeout': 10, 'read_timeout': 20})
 dispatcher = updater.dispatcher
 
 
@@ -198,7 +198,7 @@ def main() -> None:
     # webhook_url = f"https://{DOMAIN}/{TELEGRAM_WEBHOOK}/"
     # updater.bot.setWebhook(webhook_url)
     # Обработчик для текста
-    text_handler = MessageHandler(Filters.text & ~Filters.command, handle_text)
+    text_handler = MessageHandler(Filters.text & ~Filters.command & ~Filters.regex('#'), handle_text)
     start_handler = CommandHandler("start", start)
     handler_free_subscription = CommandHandler(
         "give_free_subscription", give_free_subscription
