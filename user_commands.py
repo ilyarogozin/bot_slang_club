@@ -5,9 +5,9 @@ from sqlalchemy import asc
 from telegram import Update
 from telegram.ext import CallbackContext
 
-from constants import TEXT_INVITATION
+from constants import CHAT_ID, LINK_COMING_SOON, TEXT_INVITATION, THESE_ARE_YOUR_LINKS
 from database import Session, Subscription, User
-from utils import logger, create_session
+from utils import create_invite_link, create_session, logger
 
 
 # Обработчик сообщения 'Получить ссылку 🏁'
@@ -76,8 +76,16 @@ def get_subscription_link(
                     return None
                 # Смотрим, началась ли подписка
                 if nearest_subscription.subscription_link:
+                    chat_link = (
+                        nearest_subscription.chat_link
+                        if nearest_subscription.chat_link
+                        else LINK_COMING_SOON
+                    )
                     update.message.reply_text(
-                        f"Вот твоя ссылка: {nearest_subscription.subscription_link}"
+                        THESE_ARE_YOUR_LINKS.format(
+                            invite_link=nearest_subscription.subscription_link,
+                            chat_link=chat_link,
+                        )
                     )
                     return None
                 now = datetime.datetime.now()
@@ -87,7 +95,10 @@ def get_subscription_link(
                     and nearest_subscription.start_datetime <= now
                 ):
                     invite_link = create_invite_link(
-                        context, nearest_subscription.end_datetime, CHANNEL_ID
+                        context.bot, nearest_subscription.end_datetime, CHANNEL_ID
+                    )
+                    chat_link = create_invite_link(
+                        context.bot, nearest_subscription.end_datetime, CHAT_ID
                     )
                     # Присваиваем инвайт конкретному пользователю
                     if invite_link:
@@ -97,7 +108,8 @@ def get_subscription_link(
                         context.bot.send_message(
                             chat_id=telegram_id,
                             text=TEXT_INVITATION.format(
-                                invite_link=invite_link),
+                                invite_link=invite_link, chat_link=chat_link
+                            ),
                         )
                         return None
                 # Подписка активирована
@@ -125,8 +137,16 @@ def get_subscription_link(
                 update.message.reply_text(not_found_text)
                 return None
             if nearest_subscription.subscription_link:
+                chat_link = (
+                    nearest_subscription.chat_link
+                    if nearest_subscription.chat_link
+                    else LINK_COMING_SOON
+                )
                 update.message.reply_text(
-                    f"Вот твоя ссылка: {nearest_subscription.subscription_link}"
+                    THESE_ARE_YOUR_LINKS.format(
+                        invite_link=nearest_subscription.subscription_link,
+                        chat_link=chat_link,
+                    )
                 )
                 return None
             now = datetime.datetime.now()
@@ -136,7 +156,10 @@ def get_subscription_link(
                 and nearest_subscription.start_datetime <= now
             ):
                 invite_link = create_invite_link(
-                    context, nearest_subscription.end_datetime
+                    context.bot, nearest_subscription.end_datetime, CHANNEL_ID
+                )
+                chat_link = create_invite_link(
+                    context.bot, nearest_subscription.end_datetime, CHAT_ID
                 )
                 # Присваиваем инвайт конкретному пользователю
                 if invite_link:
@@ -145,7 +168,9 @@ def get_subscription_link(
                     # Отправляем текст с инвайтом
                     context.bot.send_message(
                         chat_id=telegram_id,
-                        text=TEXT_INVITATION.format(invite_link=invite_link),
+                        text=TEXT_INVITATION.format(
+                            invite_link=invite_link, chat_link=chat_link
+                        ),
                     )
                     return None
             # Подписка активирована
@@ -153,7 +178,7 @@ def get_subscription_link(
             session.commit()
         except Exception as error:
             session.rollback()
-            logger.error(f"Ошибка при получении ссылки: {str(error)}")
+            logger.error(f"Ошибка при отправки ссылки: {str(error)}")
             raise
         finally:
             Session.remove()  # Удаляем сессию из контекста

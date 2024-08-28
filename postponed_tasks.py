@@ -5,9 +5,9 @@ from sqlalchemy.orm import joinedload
 from telegram import Update
 from telegram.ext import CallbackContext
 
-from constants import CHANNEL_ID, MODERATOR_IDS, MONTHS, TEXT_INVITATION
+from constants import CHANNEL_ID, CHAT_ID, MODERATOR_IDS, MONTHS, TEXT_INVITATION
 from database import Review, Session, Subscription, User
-from utils import create_invite_link, kick_user_from_channel, logger, create_session
+from utils import create_invite_link, create_session, kick_user_from_channel, logger
 
 
 # Объединяем пересекающиеся подписки пользователей
@@ -21,8 +21,10 @@ def handle_overlapping_subscriptions(updater) -> None:
             all_user_ids = [user_id[0] for user_id in all_user_ids]
 
             # Функция для проверки перекрытия двух интервалов времени
-            def is_overlap(start1, end1, start2, end2):
-                return max(start1, start2) <= min(end1, end2)
+            def is_overlap_or_adjacent(start1, end1, start2, end2):
+                return max(start1, start2) <= min(end1, end2) + datetime.timedelta(
+                    days=1
+                )
 
             # Обработка подписок каждого пользователя
             for user_id in all_user_ids:
@@ -37,7 +39,7 @@ def handle_overlapping_subscriptions(updater) -> None:
                 # Сравниваем каждую пару подписок
                 for i in range(len(subscriptions)):
                     for j in range(i + 1, len(subscriptions)):
-                        if is_overlap(
+                        if is_overlap_or_adjacent(
                             subscriptions[i].start_datetime,
                             subscriptions[i].end_datetime,
                             subscriptions[j].start_datetime,
@@ -116,7 +118,7 @@ def get_first_reminder_to_renew_the_subscription(updater) -> None:
     last_day_of_month = datetime.datetime(
         now.year, now.month + 1, 1
     ) - datetime.timedelta(days=1)
-    # Получаем подписок, заканчивающиеся в последний день месяца
+    # Получаем подписки, заканчивающиеся в последний день месяца
     with create_session() as session:
         expiring_subscriptions = (
             session.query(Subscription)
@@ -287,6 +289,7 @@ def check_subscription_validity(updater) -> None:
             # Получаем все истекшие подписки
             expired_subscriptions = (
                 session.query(Subscription)
+                .with_for_update()
                 .filter(Subscription.end_datetime < datetime.datetime.now())
                 .all()
             )
@@ -297,14 +300,18 @@ def check_subscription_validity(updater) -> None:
                         bot.revoke_chat_invite_link(
                             CHANNEL_ID, subscription.subscription_link
                         )
+                        bot.revoke_chat_invite_link(
+                            CHAT_ID, subscription.chat_link)
                     except Exception as error:
                         logger.error(
                             f"Бот не смог отозвать ссылку-приглашение подписки: {subscription}, "
                             "возможно она была создана другим администратором."
                         )
                 session.delete(subscription)
-            # Исключаем из канала
-            kick_user_from_channel(bot, subscription.user.telegram_id, CHANNEL_ID)
+            # Исключаем из канала и чата-болталки
+            kick_user_from_channel(
+                bot, subscription.user.telegram_id, CHANNEL_ID)
+            kick_user_from_channel(bot, subscription.user.telegram_id, CHAT_ID)
             # Фиксируем изменения в базе данных
             session.commit()
         except Exception as error:
@@ -316,55 +323,126 @@ def check_subscription_validity(updater) -> None:
     return None
 
 
-# Отправляем в 12:00 ссылку-приглашение новым подписчикам и сообщении о продлении старым в 12:00 MSK
+# Отправляем ссылку-приглашение новым подписчикам и сообщении о продлении старым в 12:00 MSK
 def send_invite_link(updater) -> None:
     bot = updater.bot
     text_prolonged = (
-        "Ма френд, привет!:)\n"
-        "Сегодня начинается новый период подписки на online "
-        "сленг-клуб🤍\n\n"
-        "Твоя подписка успешно продлена, дополнительных действий с твоей "
-        "стороны не требуется. Информация будет приходить в тот же чат, "
-        "что и в предыдущем месяце :)\n\n"
-        "Make the most of it❤️"
+        "Ма френд, привет! ✨\n\n"
+        "Сегодня начинается новый период подписки на сленг-клуб **«Sensei, for real!?»**\n\n"
+        "Твоя подписка успешно продлена, дополнительных действий с твоей стороны не требуется.\n\n"
+        "Информация будет приходить в тот же чат, что и в предыдущем месяце.\n\n"
+        "Make the most of it ♥️"
     )
     with create_session() as session:
         try:
-            # Получаем telegram_id пользователей с подписками без полученного инвайта
+            now = datetime.datetime.utcnow()
+            yesterday = now - datetime.timedelta(days=1)
+            # Получаем telegram_id пользователей с новыми подписками
             new_subscriptions = (
-                session.query(Subscription)
+                session.query(Subscription, User.telegram_id)
                 .with_for_update()
-                .filter(Subscription.subscription_link.is_(None))
-                .options(joinedload(Subscription.user))
+                .join(User, Subscription.user_id == User.id)
+                .filter(Subscription.start_datetime > yesterday)
                 .all()
             )
-            # Получаем телеграм id пользователей, у которых ещё действует подписка
+            # Получаем телеграм id пользователей с продленными подписками
             prolonged_telegram_ids = (
                 session.query(User.telegram_id)
                 .join(Subscription, User.id == Subscription.user_id)
-                .filter(Subscription.subscription_link.isnot(None))
+                .filter(
+                    and_(
+                        Subscription.start_datetime
+                        < yesterday,  # Подписка началась до вчерашнего дня
+                        Subscription.end_datetime
+                        > now,  # Подписка еще активна на данный момент
+                    )
+                )
                 .all()
             )
             # Отправляем соответствующие сообщения пользователям
-            for subscription in new_subscriptions:
-                # Создаём инвайт в канал
+            for subscription, telegram_id in new_subscriptions:
+                # Создаём инвайты в канал и чат-болталку
                 invite_link = create_invite_link(
-                    context, subscription.end_datetime, CHANNEL_ID)
+                    bot, subscription.end_datetime, CHANNEL_ID
+                )
+                chat_link = create_invite_link(
+                    bot, subscription.end_datetime, CHAT_ID)
                 # Присваиваем инвайт конкретному пользователю
-                if invite_link:
+                if invite_link and chat_link:
                     subscription.subscription_link = invite_link
+                    subscription.chat_link = chat_link
                     # Отправляем текст с инвайтом
                     bot.send_message(
-                        chat_id=subscription.user.telegram_id,
-                        text=TEXT_INVITATION.format(invite_link=invite_link),
+                        chat_id=telegram_id,
+                        text=TEXT_INVITATION.format(
+                            invite_link=invite_link, chat_link=chat_link
+                        ),
                     )
-            for telegram_id in prolonged_telegram_ids:
-                bot.send_message(chat_id=telegram_id[0], text=text_prolonged)
+                else:
+                    logger.error(
+                        f"Не удалось создать сhat_link или invite_link для телеграм id: {telegram_id}\n"
+                        "Соответственно сообщение-приглашение не отправлено при задаче send_invite_link"
+                    )
             # Сохраняем изменения в базе данных
             session.commit()
+            for telegram_id in prolonged_telegram_ids:
+                bot.send_message(
+                    chat_id=telegram_id[0], text=text_prolonged, parse_mode="markdown"
+                )
         except Exception as error:
             logger.error(f"Ошибка при send_invite_link: {str(error)}")
             session.rollback()
+        finally:
+            Session.remove()
+    return None
+
+
+# Отправляем уведомление подписчикам, продлившим подписку, о новом чате-болталке в 12:01 MSK
+def notify_about_new_chat(updater) -> None:
+    bot = updater.bot
+    notification_about_chat = (
+        "Ма френд, привет!:)\n\n"
+        "В этом месяце мы добавили новую функцию🪄\n"
+        "**Важное нововведение**❗️\n\n"
+        "Теперь у нас есть **чат клуба**, где мы можем с тобой и со всеми участниками клуба общаться!\n"
+        "Скорее переходи и вступай))\n\n"
+        "Ссылка-приглашение для вступления в **чат клуба «Sensei, for real!?»**:  {chat_link}\n\n"
+        "Жду тебя ✨"
+    )
+    with create_session() as session:
+        try:
+            now = datetime.datetime.utcnow()
+            yesterday = now - datetime.timedelta(days=1)
+            # Получаем телеграм id пользователей с продленными подписками
+            prolonged_users = (
+                session.query(User.telegram_id, Subscription.chat_link)
+                .join(Subscription, User.id == Subscription.user_id)
+                .filter(
+                    and_(
+                        Subscription.start_datetime
+                        < yesterday,  # Подписка началась до вчерашнего дня
+                        Subscription.end_datetime
+                        > now,  # Подписка еще активна на данный момент
+                    )
+                )
+                .all()
+            )
+            for telegram_id, chat_link in prolonged_users:
+                try:
+                    bot.send_message(
+                        chat_id=telegram_id,
+                        text=notification_about_chat.format(
+                            chat_link=chat_link),
+                        parse_mode="markdown",
+                    )
+                except Exception as error:
+                    logger.error(
+                        "Ошибка при отправки сообщения в notify_about_new_chat "
+                        f"для пользователя с телеграм id: {telegram_id}\n"
+                        f"Ошибка: {str(error)}"
+                    )
+        except Exception as error:
+            logger.error(f"Ошибка при notify_about_new_chat: {str(error)}")
         finally:
             Session.remove()
     return None

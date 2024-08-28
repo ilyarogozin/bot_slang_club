@@ -6,10 +6,21 @@ from sqlalchemy import asc
 from telegram import Bot, Update
 from telegram.ext import CallbackContext
 
-from constants import MODERATOR_IDS, PHONE_NUMBER_REGEX, TEXT_INVITATION, CHANNEL_ID
+from constants import (
+    CHANNEL_ID,
+    CHAT_ID,
+    MODERATOR_IDS,
+    PHONE_NUMBER_REGEX,
+    TEXT_INVITATION,
+)
 from database import Review, Session, Subscription, User
-from utils import (check_user_in_channel, create_invite_link, logger,
-                   update_subscription, create_session)
+from utils import (
+    check_user_in_channel,
+    create_invite_link,
+    create_session,
+    logger,
+    update_subscription,
+)
 
 
 # Установить конец подписки вручную через команду /set_subscription_end_at
@@ -177,8 +188,9 @@ def delete_subscription(update: Update, context: CallbackContext) -> None:
         try:
             # Проверяем наличие пользователя
             user_id = (
-                session.query(User.id).filter(
-                    User.phone_number == phone_number).first()[0]
+                session.query(User.id)
+                .filter(User.phone_number == phone_number)
+                .first()[0]
             )
             if not user_id:
                 update.message.reply_text(
@@ -197,15 +209,18 @@ def delete_subscription(update: Update, context: CallbackContext) -> None:
                     f"У пользователя {phone_number} нет подписки."
                 )
                 return None
-            # Отменяем ссылку-приглашение в канал, если есть
+            # Отменяем ссылку-приглашение в канал и чат-болталку, если есть
             if nearest_subscription.subscription_link:
                 try:
                     context.bot.revoke_chat_invite_link(
                         CHANNEL_ID, nearest_subscription.subscription_link
                     )
+                    context.bot.revoke_chat_invite_link(
+                        CHAT_ID, nearest_subscription.chat_link
+                    )
                 except Exception as error:
                     logger.error(
-                        f"Ошибка при отмене ссылки на канал у подписки с id: {nearest_subscription.id}\n"
+                        f"Ошибка при отмене ссылки на канал или чат-болталку у подписки с id: {nearest_subscription.id}\n"
                         f"error: {str(error)}"
                     )
             # Удаляем подписку
@@ -395,7 +410,7 @@ def get_all_users(update: Update, context: CallbackContext) -> None:
                                 max_length = len(cell.value)
                         except:
                             pass
-                    adjusted_width = (max_length + 2)
+                    adjusted_width = max_length + 2
                     worksheet.column_dimensions[column].width = adjusted_width
         output.seek(0)  # Перемещаемся к началу потока
         # Отправляем файл пользователю
@@ -454,7 +469,8 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                     context.bot.send_message(
                         chat_id=user.telegram_id,
                         text=TEXT_INVITATION.format(
-                            invite_link=nearest_subscription.subscription_link
+                            invite_link=nearest_subscription.subscription_link,
+                            chat_link=nearest_subscription.chat_link,
                         ),
                     )
                     # Отвечаем, что всё прошло успешно
@@ -469,18 +485,23 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
             if nearest_subscription.start_datetime <= datetime.datetime.now():
                 # Создаём ссылку, если отсутствует
                 invite_link = create_invite_link(
-                    context, nearest_subscription.end_datetime, CHANNEL_ID
+                    context.bot, nearest_subscription.end_datetime, CHANNEL_ID
+                )
+                chat_link = create_invite_link(
+                    context.bot, nearest_subscription.end_datetime, CHAT_ID
                 )
                 # Присваиваем инвайт конкретному пользователю
-                if invite_link:
+                if invite_link and chat_link:
                     nearest_subscription.subscription_link = invite_link
+                    nearest_subscription.chat_link = chat_link
                     session.commit()
                     # Отправляем текст с инвайтом
                     if user.telegram_id:
                         context.bot.send_message(
                             chat_id=user.telegram_id,
                             text=TEXT_INVITATION.format(
-                                invite_link=invite_link),
+                                invite_link=invite_link, chat_link=chat_link
+                            ),
                         )
                         # Отвечаем, что всё прошло успешно
                         update.message.reply_text(
@@ -491,6 +512,10 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                         "Ссылка-приглашение создана и привязана, но не отправлена, так как у пользователя отсутствует привязанный телеграм id."
                     )
                     return None
+                logger.error(
+                    f"Не удалось создать сhat_link или invite_link для телеграм id: {user.telegram_id}\n"
+                    "Соответственно сообщение-приглашение не отправлено при задаче send_invite_link"
+                )
                 update.message.reply_text(
                     "Не удалось создать ссылку-приглашение.")
                 return None

@@ -7,34 +7,64 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.error import BadRequest
-from telegram.ext import (CallbackContext, CommandHandler, ConversationHandler,
-                          Dispatcher, Filters, MessageHandler, Updater)
+from telegram.ext import (
+    CallbackContext,
+    CommandHandler,
+    ConversationHandler,
+    Dispatcher,
+    Filters,
+    MessageHandler,
+    Updater,
+)
 
-from constants import (CHANNEL_ID, DOMAIN, MOSCOW_TZ, PAYMENT_KEY,
-                       PAYMENT_WEBHOOK, PHONE_NUMBER_REGEX, TELEGRAM_WEBHOOK,
-                       TOKEN)
+from constants import (
+    CHANNEL_ID,
+    DOMAIN,
+    MOSCOW_TZ,
+    PAYMENT_KEY,
+    PAYMENT_WEBHOOK,
+    PHONE_NUMBER_REGEX,
+    TELEGRAM_WEBHOOK,
+    TOKEN,
+)
 from database import Review, Session, User
-from manager_commands import (change_phone_number, delete_subscription,
-                              delete_user, get_all_reviews, get_all_users,
-                              give_free_subscription,
-                              send_invite_link_personally,
-                              set_subscription_end_at)
-from postponed_tasks import (check_subscription_validity,
-                             get_first_reminder_to_join_the_club,
-                             get_first_reminder_to_renew_the_subscription,
-                             get_second_reminder_to_join_the_club,
-                             get_second_reminder_to_renew_the_subscription,
-                             handle_overlapping_subscriptions,
-                             request_feedback_from_all_users, send_invite_link,
-                             test_postponed_task)
-from user_commands import (get_invitation, get_subscription_link,
-                           get_subscription_period, get_technical_support,
-                           show_linked_phone_number, write_review, get_demo_version_of_club)
-from utils import logger, update_subscription, create_session
-
+from manager_commands import (
+    change_phone_number,
+    delete_subscription,
+    delete_user,
+    get_all_reviews,
+    get_all_users,
+    give_free_subscription,
+    send_invite_link_personally,
+    set_subscription_end_at,
+)
+from postponed_tasks import (
+    check_subscription_validity,
+    get_first_reminder_to_join_the_club,
+    get_first_reminder_to_renew_the_subscription,
+    get_second_reminder_to_join_the_club,
+    get_second_reminder_to_renew_the_subscription,
+    handle_overlapping_subscriptions,
+    notify_about_new_chat,
+    request_feedback_from_all_users,
+    send_invite_link,
+    test_postponed_task,
+)
+from user_commands import (
+    get_demo_version_of_club,
+    get_invitation,
+    get_subscription_link,
+    get_subscription_period,
+    get_technical_support,
+    show_linked_phone_number,
+    write_review,
+)
+from utils import create_session, logger, update_subscription
 
 app = Flask(__name__)
-updater = Updater(TOKEN, use_context=True, request_kwargs={'connect_timeout': 10, 'read_timeout': 20})
+updater = Updater(
+    TOKEN, use_context=True, request_kwargs={"connect_timeout": 10, "read_timeout": 20}
+)
 dispatcher = updater.dispatcher
 
 
@@ -170,7 +200,7 @@ def start(update: Update, context: CallbackContext) -> None:
         ["Получить ссылку 🏁", "Срок действия подписки 🕑"],
         [contact_keyboard, "Показать привязанный номер 📲"],
         ["Оставить отзыв ✍🏼", "Техническая поддержка ⚙️"],
-        ["Демо-версия сленг-клуба 🖼️"]
+        ["Демо-версия сленг-клуба 🖼️"],
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard)
     update.message.reply_text(
@@ -198,7 +228,9 @@ def main() -> None:
     # webhook_url = f"https://{DOMAIN}/{TELEGRAM_WEBHOOK}/"
     # updater.bot.setWebhook(webhook_url)
     # Обработчик для текста
-    text_handler = MessageHandler(Filters.text & ~Filters.command & ~Filters.regex('#'), handle_text)
+    text_handler = MessageHandler(
+        Filters.text & ~Filters.command & ~Filters.regex("#"), handle_text
+    )
     start_handler = CommandHandler("start", start)
     handler_free_subscription = CommandHandler(
         "give_free_subscription", give_free_subscription
@@ -316,8 +348,18 @@ def main() -> None:
     scheduler.add_job(
         handle_overlapping_subscriptions,
         "interval",
-        days=1,
+        minutes=10,
         args=[updater],
+    )
+    # Задача для уведомления о новом чате-болталке для пользователей, продливших подписку
+    # Устанавливаем время выполнения задачи: 1 сентября текущего года в 12:01 MSK
+    execution_time = datetime.datetime(2024, 9, 1, 12, 1)
+    scheduler.add_job(
+        notify_about_new_chat,
+        "date",
+        run_date=execution_time,
+        args=[updater],
+        replace_existing=True,
     )
 
     scheduler.start()

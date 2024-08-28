@@ -1,9 +1,16 @@
 from datetime import datetime
 
-from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
-                        create_engine, BigInteger)
-from sqlalchemy.orm import (declarative_base, relationship, scoped_session,
-                            sessionmaker)
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    create_engine,
+)
+from sqlalchemy.orm import declarative_base, relationship, scoped_session, sessionmaker
 
 from constants import HOST_DB, NAME_DB, PASSWORD_DB, PORT_DB, USERNAME_DB
 
@@ -33,6 +40,7 @@ class Subscription(Base):
     start_datetime = Column(DateTime, nullable=False)
     end_datetime = Column(DateTime, nullable=False)
     subscription_link = Column(String, nullable=True)
+    chat_link = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     user = relationship("User", back_populates="subscriptions")

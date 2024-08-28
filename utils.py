@@ -3,9 +3,10 @@ import logging
 import time
 
 from dateutil.relativedelta import relativedelta
+from telegram import Bot
 from telegram.ext import CallbackContext
 
-from constants import CHANNEL_ID, MONTHS
+from constants import CHANNEL_ID, CHAT_ID, MONTHS
 from database import Session, Subscription, User
 
 # Включаем логгирование
@@ -24,6 +25,8 @@ def kick_user_from_channel(bot, user_id: int, chat_id: str) -> None:
         bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
         logger.info(
             f"Пользователь с телеграм id: {user_id} был удалён из канала")
+        bot.unban_chat_member(
+            chat_id=chat_id, user_id=user_id, only_if_banned=True)
     except Exception as error:
         logger.error(f"Ошибка при удалении пользователя: {str(error)}")
     return None
@@ -31,7 +34,7 @@ def kick_user_from_channel(bot, user_id: int, chat_id: str) -> None:
 
 # Создаем ссылку на вступление в канал с ограничением действия
 def create_invite_link(
-    context: CallbackContext,
+    bot: Bot,
     expiration_datetime: datetime.datetime,
     chat_id: str,
     retries=3,
@@ -41,7 +44,7 @@ def create_invite_link(
     invite_link = None
     for attempt in range(retries):
         try:
-            invite_link = context.bot.create_chat_invite_link(
+            invite_link = bot.create_chat_invite_link(
                 chat_id=chat_id, member_limit=1, expire_date=expiration_timestamp
             ).invite_link
             if invite_link:
@@ -112,8 +115,7 @@ def update_subscription(
 # Проверяем присутствие пользователя в канале
 def check_user_in_channel(context: CallbackContext, user_id: int, chat_id: str) -> bool:
     try:
-        member = context.bot.get_chat_member(
-            chat_id=chat_id, user_id=user_id)
+        member = context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
         if member.status in {"member", "administrator", "creator"}:
             return True
     except Exception as error:
@@ -131,5 +133,5 @@ def create_session():
         except Exception as error:
             logger.error(f"Ошибка при создании сессии: {str(error)}")
             # Экспоненциальная задержка перед повторной попыткой
-            time.sleep(2 ** i)
+            time.sleep(2**i)
     raise Exception("Не удалось создать сессию после нескольких попыток")
