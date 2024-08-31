@@ -1,4 +1,5 @@
 import datetime
+import re
 from io import BytesIO
 
 import pandas as pd
@@ -99,6 +100,9 @@ def payment_webhook():
                 ),
                 400,
             )
+        # Регулярное выражение для удаления всех символов, кроме цифр и знака "+"
+        pattern = re.compile(r"[^\d+]")
+        phone_number = pattern.sub("", phone_number)
         amount_months = data.get("payment").get("products")[
             0].get("name").split()[-2]
         if not amount_months:
@@ -111,7 +115,7 @@ def payment_webhook():
                 ),
                 400,
             )
-        _, start_month, start_year = data.get("month").split("-")
+        start_year, start_month, _ = data.get("month").split("-")
         if not start_month or not start_year:
             return (
                 jsonify(
@@ -122,9 +126,12 @@ def payment_webhook():
                 ),
                 400,
             )
+        tg = data.get("tg")
+        tg = tg[1:] if tg.startswith('@') else tg
         # Обновляем подписку в соответствии с условиями
         update_subscription(
-            int(amount_months), phone_number, int(start_month), int(start_year)
+            int(amount_months), phone_number, int(
+                start_month), int(start_year), tg
         )
     except Exception as error:
         logger.error(f"payment webhook error: {str(error)}")
@@ -311,7 +318,7 @@ def main() -> None:
         get_first_reminder_to_join_the_club,
         "cron",
         day=1,
-        hour=16,
+        hour=15,
         minute=0,
         args=[updater],
     )
@@ -320,18 +327,18 @@ def main() -> None:
         get_second_reminder_to_join_the_club,
         "cron",
         day=1,
-        hour=18,
+        hour=17,
         minute=0,
         args=[updater],
     )
     # Проверяем валидность подписки у всех пользователей
-    # первого числа каждого месяца в 18:00 MSK
+    # первого числа каждого месяца в 18:10 MSK
     scheduler.add_job(
         check_subscription_validity,
         "cron",
         day=1,
         hour=18,
-        minute=0,
+        minute=10,
         args=[updater],
     )
     # Задача для отправки инвайта новым подписчикам и сообщения о

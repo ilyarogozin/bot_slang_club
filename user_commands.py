@@ -61,8 +61,6 @@ def get_subscription_link(
                 user.telegram_id = update.message.chat_id
                 if update.message.from_user.username:
                     user.user_link = f"https://t.me/{update.message.from_user.username}"
-                else:
-                    user.user_link = "-"
                 session.commit()
                 # Смотрим, оплачена ли подписка
                 nearest_subscription = (

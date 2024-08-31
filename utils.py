@@ -24,7 +24,7 @@ def kick_user_from_channel(bot, user_id: int, chat_id: str) -> None:
     try:
         bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
         logger.info(
-            f"Пользователь с телеграм id: {user_id} был удалён из канала")
+            f"Пользователь с телеграм id: {user_id} был удалён из канала: {chat_id}")
         bot.unban_chat_member(
             chat_id=chat_id, user_id=user_id, only_if_banned=True)
     except Exception as error:
@@ -63,7 +63,7 @@ def create_invite_link(
 
 # Логика обновления подписки
 def update_subscription(
-    paid_months: int, phone_number: str, start_month: int, start_year: int
+    paid_months: int, phone_number: str, start_month: int, start_year: int, tg: str
 ) -> None:
     start_datetime = datetime.datetime(
         day=1, month=start_month, year=start_year, hour=12, minute=0
@@ -83,7 +83,8 @@ def update_subscription(
             )
             # Если новый пользователь
             if not user:
-                new_user = User(phone_number=phone_number)
+                user_link = f"https://t.me/{tg}"
+                new_user = User(phone_number=phone_number, user_link=user_link)
                 session.add(new_user)
                 session.commit()
                 new_subscription = Subscription(

@@ -153,7 +153,7 @@ def give_free_subscription(update: Update, context: CallbackContext) -> None:
         )
         return None
     # Даём пользователю бесплатную подписку
-    update_subscription(months, phone_number, start_month, start_year)
+    update_subscription(months, phone_number, start_month, start_year, "-")
     # Отвечаем, что всё прошло успешно
     update.message.reply_text(
         f"Пользователю с номером {phone_number} была предоставлена подписка на {months} месяцев, "
@@ -322,17 +322,30 @@ def get_all_reviews(update: Update, context: CallbackContext) -> None:
     # Переименовываем столбцы
     df.columns = ["Текст отзыва", "Телефонный номер",
                   "Ссылка на телеграм аккаунт"]
-    # Создаем буфер и сохраняем DataFrame в него как файл Excel
-    excel_file = BytesIO()
-    with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
-    # Перемещаем указатель в начало файла
-    excel_file.seek(0)
-    # Отправляем файл пользователю
-    chat_id = update.effective_chat.id
-    context.bot.send_document(
-        chat_id=chat_id, document=excel_file, filename="reviews.xlsx"
-    )
+    # Создаём Excel-файла в памяти
+    with BytesIO() as output:
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="Отзывы", index=False)
+            worksheet = writer.sheets["Отзывы"]
+            # Настройка ширины столбцов и перенос текста для длинных отзывов
+            for col in worksheet.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    # Определяем максимальную длину содержимого в ячейке
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(cell.value)
+                    except:
+                        pass
+                # Устанавливаем ширину столбца
+                adjusted_width = max_length + 2
+                worksheet.column_dimensions[column].width = adjusted_width
+        output.seek(0)  # Перемещаемся к началу потока
+        # Отправляем файл пользователю
+        context.bot.send_document(
+            chat_id=update.effective_chat.id, document=output, filename="reviews.xlsx"
+        )
     return None
 
 
