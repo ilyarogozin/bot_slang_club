@@ -1,26 +1,18 @@
 import datetime
 import re
-from io import BytesIO
 
-import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
-from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
-from telegram.error import BadRequest
 from telegram.ext import (
     CallbackContext,
     CommandHandler,
-    ConversationHandler,
-    Dispatcher,
     Filters,
     MessageHandler,
     Updater,
 )
 
 from constants import (
-    CHANNEL_ID,
-    DOMAIN,
     MOSCOW_TZ,
     PAYMENT_KEY,
     PAYMENT_WEBHOOK,
@@ -36,6 +28,7 @@ from manager_commands import (
     get_all_reviews,
     get_all_users,
     give_free_subscription,
+    notify_about_new_chat_personally,
     send_invite_link_personally,
     set_subscription_end_at,
 )
@@ -86,7 +79,7 @@ def payment_webhook():
         payment_key = request.headers.get("API-Key")
         # Сравниваем полученный ключ с ожидаемым
         if payment_key != PAYMENT_KEY:
-            return jsonify({"status": "failure", "message": "Invalid key"}), 400
+            return (jsonify({"status": "failure", "message": "Invalid key"}), 400)
         data = request.json
         logger.info(f"Got webhook request body: {data}")
         phone_number = data.get("Phone")
@@ -100,11 +93,11 @@ def payment_webhook():
                 ),
                 400,
             )
-        # Регулярное выражение для удаления всех символов, кроме цифр и знака "+"
+        # Регулярное выражение для удаления всех символов,
+        # кроме цифр и знака "+"
         pattern = re.compile(r"[^\d+]")
         phone_number = pattern.sub("", phone_number)
-        amount_months = data.get("payment").get("products")[
-            0].get("name").split()[-2]
+        amount_months = data.get("payment").get("products")[0].get("name").split()[-2]
         if not amount_months:
             return (
                 jsonify(
@@ -127,11 +120,10 @@ def payment_webhook():
                 400,
             )
         tg = data.get("tg")
-        tg = tg[1:] if tg.startswith('@') else tg
+        tg = tg[1:] if tg.startswith("@") else tg
         # Обновляем подписку в соответствии с условиями
         update_subscription(
-            int(amount_months), phone_number, int(
-                start_month), int(start_year), tg
+            int(amount_months), phone_number, int(start_month), int(start_year), tg
         )
     except Exception as error:
         logger.error(f"payment webhook error: {str(error)}")
@@ -248,8 +240,7 @@ def main() -> None:
     handler_change_phone_number = CommandHandler(
         "change_phone_number", change_phone_number
     )
-    handler_get_all_reviews = CommandHandler(
-        "get_all_reviews", get_all_reviews)
+    handler_get_all_reviews = CommandHandler("get_all_reviews", get_all_reviews)
     handler_get_all_users = CommandHandler("get_all_users", get_all_users)
     get_invitation_handler = CommandHandler("get_invitation", get_invitation)
     test_postponed_task_handler = CommandHandler(
@@ -264,10 +255,14 @@ def main() -> None:
     delete_user_handler = CommandHandler("delete_user", delete_user)
     # Обработчик номера телефона, отправленного с клавиатуры
     contact_handler = MessageHandler(Filters.contact, handle_contact)
+    notify_about_new_chat_personally_handler = CommandHandler(
+        "notify_about_new_chat_personally", notify_about_new_chat_personally
+    )
 
     # Регистрируем все ошибки
     dispatcher.add_error_handler(error)
 
+    dispatcher.add_handler(notify_about_new_chat_personally_handler)
     dispatcher.add_handler(delete_user_handler)
     dispatcher.add_handler(send_invite_link_personally_handler)
     dispatcher.add_handler(set_subscription_end_at_handler)
@@ -358,9 +353,10 @@ def main() -> None:
         minutes=10,
         args=[updater],
     )
-    # Задача для уведомления о новом чате-болталке для пользователей, продливших подписку
-    # Устанавливаем время выполнения задачи: 1 сентября текущего года в 12:01 MSK
-    execution_time = datetime.datetime(2024, 9, 1, 12, 1)
+    # Задача для уведомления о новом чате-болталке
+    # для пользователей, продливших подписку
+    # Время выполнения задачи: 1 сентября текущего года в 12:05 MSK
+    execution_time = datetime.datetime(2024, 9, 1, 12, 5)
     scheduler.add_job(
         notify_about_new_chat,
         "date",

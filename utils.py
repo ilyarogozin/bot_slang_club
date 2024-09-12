@@ -6,7 +6,7 @@ from dateutil.relativedelta import relativedelta
 from telegram import Bot
 from telegram.ext import CallbackContext
 
-from constants import CHANNEL_ID, CHAT_ID, MONTHS
+from constants import MONTHS
 from database import Session, Subscription, User
 
 # Включаем логгирование
@@ -24,9 +24,10 @@ def kick_user_from_channel(bot, user_id: int, chat_id: str) -> None:
     try:
         bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
         logger.info(
-            f"Пользователь с телеграм id: {user_id} был удалён из канала: {chat_id}")
-        bot.unban_chat_member(
-            chat_id=chat_id, user_id=user_id, only_if_banned=True)
+            f"Пользователь с телеграм id: {user_id} был удалён из канала: {chat_id}"
+        )
+        time.sleep(1)
+        bot.unban_chat_member(chat_id=chat_id, user_id=user_id, only_if_banned=True)
     except Exception as error:
         logger.error(f"Ошибка при удалении пользователя: {str(error)}")
     return None
@@ -50,8 +51,7 @@ def create_invite_link(
             if invite_link:
                 return invite_link
         except Exception as error:
-            logger.error(
-                f"Попытка создать ссылку {attempt + 1} failed: {error}")
+            logger.error(f"Попытка создать ссылку {attempt + 1} failed: {error}")
             if "Flood control exceeded" in str(error):
                 time.sleep(flood_delay)
             else:
@@ -74,7 +74,8 @@ def update_subscription(
     )
     with create_session() as session:
         try:
-            # Получаем пользователя по номеру телефона с блокировкой записи в БД
+            # Получаем пользователя по номеру телефона
+            # с блокировкой записи в БД
             user = (
                 session.query(User)
                 .filter(User.phone_number == phone_number)

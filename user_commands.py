@@ -5,7 +5,13 @@ from sqlalchemy import asc
 from telegram import Update
 from telegram.ext import CallbackContext
 
-from constants import CHAT_ID, LINK_COMING_SOON, TEXT_INVITATION, THESE_ARE_YOUR_LINKS
+from constants import (
+    CHANNEL_ID,
+    CHAT_ID,
+    LINK_COMING_SOON,
+    TEXT_INVITATION,
+    THESE_ARE_YOUR_LINKS,
+)
 from database import Session, Subscription, User
 from utils import create_invite_link, create_session, logger
 
@@ -46,7 +52,8 @@ def get_subscription_link(
                 if not user:
                     update.message.reply_text(not_found_text)
                     return None
-                # Проверяем, что телеграм id пользователя ещё не привязан к какому-либо телефонному номеру
+                # Проверяем, что телеграм id пользователя ещё не привязан
+                # к какому-либо телефонному номеру
                 if not user.telegram_id:
                     user_from_id = (
                         session.query(User)
@@ -54,8 +61,7 @@ def get_subscription_link(
                         .first()
                     )
                     if user_from_id:
-                        update.message.reply_text(
-                            telegram_id_already_has_phone)
+                        update.message.reply_text(telegram_id_already_has_phone)
                         return None
                 # Обновляем телеграм id и телеграм ссылку пользователя
                 user.telegram_id = update.message.chat_id
@@ -104,7 +110,7 @@ def get_subscription_link(
                         session.commit()
                         # Отправляем текст с инвайтом
                         context.bot.send_message(
-                            chat_id=telegram_id,
+                            chat_id=user.telegram_id,
                             text=TEXT_INVITATION.format(
                                 invite_link=invite_link, chat_link=chat_link
                             ),
@@ -115,8 +121,7 @@ def get_subscription_link(
                 return None
             # Если номер телефона не передан
             telegram_id = update.message.from_user.id
-            user = session.query(User).filter(
-                User.telegram_id == telegram_id).first()
+            user = session.query(User).filter(User.telegram_id == telegram_id).first()
             if not user:
                 update.message.reply_text(
                     "Напишите номер телефона, который вы ввели при оплате👇🏼, "
@@ -187,8 +192,7 @@ def get_subscription_link(
 def get_subscription_period(update: Update, context: CallbackContext) -> None:
     telegram_id = update.message.from_user.id
     with create_session() as session:
-        user_id = session.query(User.id).filter(
-            User.telegram_id == telegram_id).first()
+        user_id = session.query(User.id).filter(User.telegram_id == telegram_id).first()
         if not user_id:
             update.message.reply_text("У тебя нет действующей подписки.")
             return None
@@ -196,7 +200,6 @@ def get_subscription_period(update: Update, context: CallbackContext) -> None:
         nearest_subscription = (
             session.query(Subscription)
             .filter(Subscription.user_id == user_id[0])
-            # .filter(Subscription.start_datetime >= datetime.datetime.now())
             .order_by(asc(Subscription.start_datetime))
             .first()
         )
@@ -217,8 +220,7 @@ def get_subscription_period(update: Update, context: CallbackContext) -> None:
 def show_linked_phone_number(update: Update, context: CallbackContext) -> None:
     telegram_id = update.message.from_user.id
     with create_session() as session:
-        user = session.query(User).filter(
-            User.telegram_id == telegram_id).first()
+        user = session.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
             update.message.reply_text("У тебя нет привязанного номера.")
             return None
@@ -243,8 +245,7 @@ def get_technical_support(update: Update, context: CallbackContext) -> None:
 def write_review(update: Update, context: CallbackContext) -> None:
     telegram_id = update.message.from_user.id
     with create_session() as session:
-        user = session.query(User).filter(
-            User.telegram_id == telegram_id).first()
+        user = session.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
             update.message.reply_text(
                 "К сожалению, ты не можешь оставить отзыв, так как не являешься членом сленг клуба.\n\n"

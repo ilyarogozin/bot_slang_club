@@ -1,15 +1,17 @@
 import datetime
+import time
 from io import BytesIO
 
 import pandas as pd
 from sqlalchemy import asc
-from telegram import Bot, Update
+from telegram import Update
 from telegram.ext import CallbackContext
 
 from constants import (
     CHANNEL_ID,
     CHAT_ID,
     MODERATOR_IDS,
+    MOSCOW_TZ,
     PHONE_NUMBER_REGEX,
     TEXT_INVITATION,
 )
@@ -61,8 +63,7 @@ def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
     with create_session() as session:
         try:
             user_id = (
-                session.query(User.id).filter(
-                    User.phone_number == phone_number).first()
+                session.query(User.id).filter(User.phone_number == phone_number).first()
             )
             # Получаем самую ближайшую подписку
             nearest_subscription = (
@@ -137,16 +138,16 @@ def give_free_subscription(update: Update, context: CallbackContext) -> None:
             "Пожалуйста, введите количество месяцев, месяц начала и год числом."
         )
         return None
-    now = datetime.datetime.now()
-    if start_year < now.year:
-        update.message.reply_text(
-            "Пожалуйста, введите год начала не раньше нынешнего.")
-        return None
-    if start_month < now.month:
-        update.message.reply_text(
-            "Пожалуйста, введите месяц начала не раньше нынешнего."
-        )
-        return None
+    # now = datetime.datetime.now()
+    # if start_year < now.year:
+    #     update.message.reply_text(
+    #         "Пожалуйста, введите год начала не раньше нынешнего.")
+    #     return None
+    # if start_month < now.month:
+    #     update.message.reply_text(
+    #         "Пожалуйста, введите месяц начала не раньше нынешнего."
+    #     )
+    #     return None
     if months < 0:
         update.message.reply_text(
             "Пожалуйста, введите положительное количество месяцев."
@@ -320,8 +321,7 @@ def get_all_reviews(update: Update, context: CallbackContext) -> None:
     # Преобразуем результаты запроса в DataFrame
     df = pd.read_sql(query.statement, query.session.bind)
     # Переименовываем столбцы
-    df.columns = ["Текст отзыва", "Телефонный номер",
-                  "Ссылка на телеграм аккаунт"]
+    df.columns = ["Текст отзыва", "Телефонный номер", "Ссылка на телеграм аккаунт"]
     # Создаём Excel-файла в памяти
     with BytesIO() as output:
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -336,7 +336,7 @@ def get_all_reviews(update: Update, context: CallbackContext) -> None:
                     try:
                         if len(str(cell.value)) > max_length:
                             max_length = len(cell.value)
-                    except:
+                    except Exception:
                         pass
                 # Устанавливаем ширину столбца
                 adjusted_width = max_length + 2
@@ -359,50 +359,63 @@ def get_all_users(update: Update, context: CallbackContext) -> None:
     with create_session() as session:
         # Получаем всех пользователей
         users = session.query(User).all()
-
         # Преобразование данных в формат, подходящий для записи в Excel
         all_users_data = []
         subscribed_users_data = []
         active_subscriptions_data = []
         unjoined_users_data = []
-
+        unjoined_in_chat_data = []
+        now = datetime.datetime.now(MOSCOW_TZ)
         for user in users:
-            subscriptions_str = ", ".join(
-                [
-                    f"{sub.start_datetime.strftime('%d.%m.%Y')}-{sub.end_datetime.strftime('%d.%m.%Y')}"
-                    for sub in user.subscriptions
-                ]
-            )
-            user_data = {
-                "Телеграм ID": user.telegram_id,
-                "Телефонный номер": user.phone_number,
-                "Ссылка на телеграм аккаунт": user.user_link,
-                "Подписки": subscriptions_str,
-            }
-            all_users_data.append(user_data)
-
-            if user.subscriptions:
-                subscribed_users_data.append(user_data)
-                for sub in user.subscriptions:
-                    if (
-                        sub.start_datetime
-                        <= datetime.datetime.now()
-                        <= sub.end_datetime
-                    ):
+            try:
+                subscriptions_str = ", ".join(
+                    [
+                        f"{sub.start_datetime.strftime('%d.%m.%Y')}-{sub.end_datetime.strftime('%d.%m.%Y')}"
+                        for sub in user.subscriptions
+                    ]
+                )
+                user_data = {
+                    "Телеграм ID": user.telegram_id,
+                    "Телефонный номер": user.phone_number,
+                    "Ссылка на телеграм аккаунт": user.user_link,
+                    "Подписки": subscriptions_str,
+                }
+                all_users_data.append(user_data)
+                if user.subscriptions:
+                    subscribed_users_data.append(user_data)
+                    sub = user.subscriptions[0]
+                    if sub.start_datetime.tzinfo is None:
+                        sub.start_datetime = sub.start_datetime.replace(
+                            tzinfo=MOSCOW_TZ
+                        )
+                    if sub.end_datetime.tzinfo is None:
+                        sub.end_datetime = sub.end_datetime.replace(tzinfo=MOSCOW_TZ)
+                    if sub.start_datetime < now < sub.end_datetime:
                         active_subscriptions_data.append(user_data)
-                        if not sub.user.telegram_id or not check_user_in_channel(
+                        if not sub.user.telegram_id:
+                            unjoined_users_data.append(user_data)
+                            unjoined_in_chat_data.append(user_data)
+                            continue
+                        if not check_user_in_channel(
                             context, sub.user.telegram_id, CHANNEL_ID
                         ):
                             unjoined_users_data.append(user_data)
-
+                        if not check_user_in_channel(
+                            context, sub.user.telegram_id, CHAT_ID
+                        ):
+                            unjoined_in_chat_data.append(user_data)
+            except Exception as error:
+                logger.error(
+                    f"Ошибка при get_all_users: {str(error)}\n"
+                    f"Телефонный номер: {user.phone_number}"
+                )
     Session.remove()
-
     # Создание DataFrame'ов из данных
     all_users_df = pd.DataFrame(all_users_data)
     subscribed_users_df = pd.DataFrame(subscribed_users_data)
     active_subscriptions_df = pd.DataFrame(active_subscriptions_data)
     unjoined_users_df = pd.DataFrame(unjoined_users_data)
-
+    unjoined_in_chat_df = pd.DataFrame(unjoined_in_chat_data)
     # Создание Excel-файла в памяти
     with BytesIO() as output:
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -411,6 +424,7 @@ def get_all_users(update: Update, context: CallbackContext) -> None:
                 (subscribed_users_df, "Пользователи с подписками"),
                 (active_subscriptions_df, "Активные подписки"),
                 (unjoined_users_df, "Не вступили в канал"),
+                (unjoined_in_chat_df, "Не вступили в чат"),
             ]:
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
                 worksheet = writer.sheets[sheet_name]
@@ -421,7 +435,7 @@ def get_all_users(update: Update, context: CallbackContext) -> None:
                         try:
                             if len(str(cell.value)) > max_length:
                                 max_length = len(cell.value)
-                        except:
+                        except Exception:
                             pass
                     adjusted_width = max_length + 2
                     worksheet.column_dimensions[column].width = adjusted_width
@@ -456,8 +470,7 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
         return None
     with create_session() as session:
         try:
-            user = session.query(User).filter(
-                User.phone_number == phone_number).first()
+            user = session.query(User).filter(User.phone_number == phone_number).first()
             # Проверяем наличие пользователя
             if not user:
                 update.message.reply_text(
@@ -492,17 +505,26 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                     )
                     return None
                 update.message.reply_text(
-                    "Ссылка-приглашение создана и привязана, но не отправлена, так как у пользователя отсутствует привязанный телеграм id."
+                    "Ссылка-приглашение создана и привязана, но не отправлена, "
+                    "так как у пользователя отсутствует привязанный телеграм id."
                 )
                 return None
-            if nearest_subscription.start_datetime <= datetime.datetime.now():
+            if nearest_subscription.start_datetime.astimezone(
+                MOSCOW_TZ
+            ) <= datetime.datetime.now(MOSCOW_TZ):
                 # Создаём ссылку, если отсутствует
                 invite_link = create_invite_link(
-                    context.bot, nearest_subscription.end_datetime, CHANNEL_ID
+                    context.bot,
+                    nearest_subscription.end_datetime.astimezone(MOSCOW_TZ),
+                    CHANNEL_ID,
                 )
+                time.sleep(1)
                 chat_link = create_invite_link(
-                    context.bot, nearest_subscription.end_datetime, CHAT_ID
+                    context.bot,
+                    nearest_subscription.end_datetime.astimezone(MOSCOW_TZ),
+                    CHAT_ID,
                 )
+                time.sleep(1)
                 # Присваиваем инвайт конкретному пользователю
                 if invite_link and chat_link:
                     nearest_subscription.subscription_link = invite_link
@@ -522,22 +544,21 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                         )
                         return None
                     update.message.reply_text(
-                        "Ссылка-приглашение создана и привязана, но не отправлена, так как у пользователя отсутствует привязанный телеграм id."
+                        "Ссылка-приглашение создана и привязана, но не отправлена, "
+                        "так как у пользователя отсутствует привязанный телеграм id."
                     )
                     return None
                 logger.error(
                     f"Не удалось создать сhat_link или invite_link для телеграм id: {user.telegram_id}\n"
                     "Соответственно сообщение-приглашение не отправлено при задаче send_invite_link"
                 )
-                update.message.reply_text(
-                    "Не удалось создать ссылку-приглашение.")
+                update.message.reply_text("Не удалось создать ссылку-приглашение.")
                 return None
             update.message.reply_text(
                 "Ссылка-приглашение не может быть создана, так как период подписки ещё не начался."
             )
         except Exception as error:
-            logger.error(
-                f"Ошибка при send_invite_link_personally: {str(error)}")
+            logger.error(f"Ошибка при send_invite_link_personally: {str(error)}")
             session.rollback()
         finally:
             Session.remove()
@@ -568,8 +589,7 @@ def delete_user(update: Update, context: CallbackContext) -> None:
     with create_session() as session:
         try:
             # Проверяем наличие пользователя
-            user = session.query(User).filter(
-                User.phone_number == phone_number).first()
+            user = session.query(User).filter(User.phone_number == phone_number).first()
             if not user:
                 update.message.reply_text(
                     "Пользователя с таким телефонным номером не существует."
@@ -583,6 +603,82 @@ def delete_user(update: Update, context: CallbackContext) -> None:
             )
         except Exception as error:
             logger.error(f"Ошибка при delete_user: {str(error)}")
+            session.rollback()
+        finally:
+            Session.remove()
+    return None
+
+
+# Отправляем уведомление о новом чате персонально
+def notify_about_new_chat_personally(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text("Запрос обрабатывается...")
+    # Проверяем, является ли пользователь команды модератором
+    if update.message.from_user.id not in MODERATOR_IDS:
+        update.message.reply_text("Вы не являетесь модератором.")
+        return None
+    # Обрабатываем возможные ошибки при введении аргументов
+    args = context.args
+    if len(args) != 1:
+        update.message.reply_text(
+            "Пожалуйста, введите команду в формате: /notify_about_new_chat_personally телеграм_id\n"
+            "Одним сообщением, в одну строку."
+        )
+        return None
+    telegram_id = args[0]
+    if not telegram_id.isdigit():
+        update.message.reply_text("Телеграм id должен быть числом")
+        return None
+    telegram_id = int(telegram_id)
+    bot = context.bot
+    notification_about_chat = (
+        "Ма френд, привет!:)\n\n"
+        "В этом месяце мы добавили новую функцию🪄\n"
+        "Важное нововведение❗️\n\n"
+        "Теперь у нас есть чат клуба, где мы можем с тобой и со всеми участниками клуба общаться!\n"
+        "Скорее переходи и вступай))\n\n"
+        "Ссылка-приглашение для вступления в чат клуба «Sensei, for real!?»:  {chat_link}\n\n"
+        "Жду тебя ✨"
+    )
+    with create_session() as session:
+        try:
+            user = session.query(User).filter(User.telegram_id == telegram_id).first()
+            if not user:
+                update.message.reply_text(
+                    "Пользователя с таким телеграм id не существует."
+                )
+                return None
+            subscription = user.subscriptions[0]
+            if not subscription:
+                update.message.reply_text("У пользователя отсутствует подписка.")
+                return None
+            if not subscription.chat_link:
+                chat_link = create_invite_link(bot, subscription.end_datetime, CHAT_ID)
+                if not chat_link:
+                    update.message.reply_text(
+                        f"Не удалось создать ссылку для {user.telegram_id}"
+                    )
+                    return None
+                subscription.chat_link = chat_link
+            try:
+                bot.send_message(
+                    chat_id=user.telegram_id,
+                    text=notification_about_chat.format(
+                        chat_link=subscription.chat_link
+                    ),
+                )
+            except Exception as error:
+                logger.error(
+                    "Ошибка при отправки сообщения в notify_about_new_chat_personally "
+                    f"для пользователя с телеграм id: {user.telegram_id}\n"
+                    f"Ошибка: {str(error)}"
+                )
+            else:
+                update.message.reply_text(
+                    f"Пользователю с телеграм id {user.telegram_id} успешно отправлено уведомление"
+                )
+            session.commit()
+        except Exception as error:
+            logger.error(f"Ошибка при notify_about_new_chat: {str(error)}")
             session.rollback()
         finally:
             Session.remove()

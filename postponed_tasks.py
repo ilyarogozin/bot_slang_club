@@ -1,19 +1,18 @@
 import datetime
+import time
 
 from sqlalchemy import and_, extract, func
-from sqlalchemy.orm import joinedload
 from sqlalchemy.sql import exists
 from telegram import Update
 from telegram.ext import CallbackContext
 
 from constants import CHANNEL_ID, CHAT_ID, MODERATOR_IDS, MONTHS, TEXT_INVITATION
-from database import Review, Session, Subscription, User
+from database import Session, Subscription, User
 from utils import create_invite_link, create_session, kick_user_from_channel, logger
 
 
 # Объединяем пересекающиеся подписки пользователей
 def handle_overlapping_subscriptions(updater) -> None:
-    bot = updater.bot
     with create_session() as session:
         try:
             # Получим id всех пользователей
@@ -52,8 +51,7 @@ def handle_overlapping_subscriptions(updater) -> None:
                 # Обрабатываем найденные перекрывающиеся подписки
                 for sub1, sub2 in overlapping_subscriptions:
                     # Объединяем подписки
-                    combined_start = min(
-                        sub1.start_datetime, sub2.start_datetime)
+                    combined_start = min(sub1.start_datetime, sub2.start_datetime)
                     combined_end = max(sub1.end_datetime, sub2.end_datetime)
                     # Обновляем первую подписку с объединенными датами
                     sub1.start_datetime = combined_start
@@ -63,8 +61,7 @@ def handle_overlapping_subscriptions(updater) -> None:
             # Сохраняем изменения в базе данных
             session.commit()
         except Exception as error:
-            logger.error(
-                f"Ошибка при handle_overlapping_subscriptions: {str(error)}")
+            logger.error(f"Ошибка при handle_overlapping_subscriptions: {str(error)}")
             session.rollback()
         finally:
             Session.remove()  # Удаляем сессию из контекста
@@ -87,8 +84,7 @@ def request_feedback_from_all_users(updater) -> None:
             chat_id = telegram_id[0]
             if chat_id:
                 try:
-                    bot.send_message(chat_id=chat_id, text=text,
-                                     parse_mode="markdown")
+                    bot.send_message(chat_id=chat_id, text=text, parse_mode="markdown")
                 except Exception as error:
                     logger.error(
                         f"Ошибка при отправке сообщения пользователю с chat_id {chat_id}: {error}"
@@ -99,7 +95,8 @@ def request_feedback_from_all_users(updater) -> None:
     return None
 
 
-# Отправляем всем действующим подписчикам 25 числа в 17:00 MSK напоминание о продлении подписки
+# Отправляем всем действующим подписчикам 25 числа
+# в 17:00 MSK напоминание о продлении подписки
 def get_first_reminder_to_renew_the_subscription(updater) -> None:
     bot = updater.bot
     text = (
@@ -115,7 +112,6 @@ def get_first_reminder_to_renew_the_subscription(updater) -> None:
     # Определяем текущую дату
     now = datetime.datetime.now()
     # Находим первый и последний день текущего месяца
-    first_day_of_month = datetime.datetime(now.year, now.month, 1)
     last_day_of_month = datetime.datetime(
         now.year, now.month + 1, 1
     ) - datetime.timedelta(days=1)
@@ -128,8 +124,7 @@ def get_first_reminder_to_renew_the_subscription(updater) -> None:
                 and_(
                     extract("year", Subscription.end_datetime) == now.year,
                     extract("month", Subscription.end_datetime) == now.month,
-                    extract(
-                        "day", Subscription.end_datetime) == last_day_of_month.day,
+                    extract("day", Subscription.end_datetime) == last_day_of_month.day,
                 )
             )
             .all()
@@ -175,16 +170,26 @@ def get_second_reminder_to_renew_the_subscription(updater) -> None:
     today = now.date()
     with create_session() as session:
         # Получаем все telegram_id подписок, заканчивающихся сегодня
-        renew_ids = session.query(User.telegram_id).join(Subscription).filter(
-            func.date(Subscription.end_datetime) == today).all()
+        renew_ids = (
+            session.query(User.telegram_id)
+            .join(Subscription)
+            .filter(func.date(Subscription.end_datetime) == today)
+            .all()
+        )
         # Получаем телеграм id пользователей, у которых все подписки закончились
-        ids_without_subscriptions = session.query(User.telegram_id).filter(~exists().where(Subscription.user_id == User.id)).all()
+        ids_without_subscriptions = (
+            session.query(User.telegram_id)
+            .filter(~exists().where(Subscription.user_id == User.id))
+            .all()
+        )
         # Отправляем всем полученным пользователям соответствующее сообщение
         for telegram_id in renew_ids:
             if telegram_id[0]:
                 try:
                     bot.send_message(
-                        chat_id=telegram_id[0], text=renew_message, parse_mode="markdown"
+                        chat_id=telegram_id[0],
+                        text=renew_message,
+                        parse_mode="markdown",
                     )
                 except Exception as error:
                     logger.error(
@@ -234,8 +239,7 @@ def get_first_reminder_to_join_the_club(updater) -> None:
             chat_id = telegram_id[0]
             if chat_id:
                 try:
-                    bot.send_message(chat_id=chat_id, text=text,
-                                     parse_mode="markdown")
+                    bot.send_message(chat_id=chat_id, text=text, parse_mode="markdown")
                 except Exception as error:
                     logger.error(
                         "Задача get_first_reminder_to_join_the_club\n"
@@ -252,7 +256,11 @@ def get_second_reminder_to_join_the_club(updater) -> None:
     bot = updater.bot
     with create_session() as session:
         # Получаем подписки с заполненным полем subscription_link
-        ids_with_subscriptions = session.query(User.telegram_id).filter(exists().where(Subscription.user_id == User.id)).all()
+        ids_with_subscriptions = (
+            session.query(User.telegram_id)
+            .filter(exists().where(Subscription.user_id == User.id))
+            .all()
+        )
         text = (
             "Как ответственный бот сленг-клуба «Sensei, for real!?», хочу "
             "тебе напомнить о моём предыдущем сообщении, если ты по каким-либо "
@@ -265,8 +273,9 @@ def get_second_reminder_to_join_the_club(updater) -> None:
         for telegram_id in ids_with_subscriptions:
             if telegram_id[0]:
                 try:
-                    bot.send_message(chat_id=telegram_id[0], text=text,
-                                     parse_mode="markdown")
+                    bot.send_message(
+                        chat_id=telegram_id[0], text=text, parse_mode="markdown"
+                    )
                 except Exception as error:
                     logger.error(
                         "Задача get_second_reminder_to_join_the_club\n"
@@ -278,7 +287,7 @@ def get_second_reminder_to_join_the_club(updater) -> None:
     return None
 
 
-# Проверям валидность подписки 1ого числа в 18:00 MSK
+# Проверям валидность подписки 1ого числа в 18:10 MSK
 def check_subscription_validity(updater) -> None:
     bot = updater.bot
     with create_session() as session:
@@ -297,23 +306,30 @@ def check_subscription_validity(updater) -> None:
                         bot.revoke_chat_invite_link(
                             CHANNEL_ID, subscription.subscription_link
                         )
-                        bot.revoke_chat_invite_link(
-                            CHAT_ID, subscription.chat_link)
                     except Exception as error:
                         logger.error(
-                            f"Бот не смог отозвать ссылку-приглашение в клуб/чат подписки: {subscription}, "
-                            "возможно она была создана другим администратором."
+                            "Бот не смог отозвать ссылку-приглашение в клуб у пользователя: "
+                            f"{subscription.user.phone_number}, "
+                            "возможно она была создана другим администратором.\n"
+                            f"Error: {error}"
+                        )
+                    try:
+                        bot.revoke_chat_invite_link(CHAT_ID, subscription.chat_link)
+                    except Exception as error:
+                        logger.error(
+                            "Бот не смог отозвать ссылку-приглашение в чат-болталку у пользователя: "
+                            f"{subscription.user.phone_number}, "
+                            "возможно она была создана другим администратором.\n"
+                            f"Error: {error}"
                         )
                 session.delete(subscription)
                 # Исключаем из канала и чата-болталки
-                kick_user_from_channel(
-                    bot, subscription.user.telegram_id, CHANNEL_ID)
+                kick_user_from_channel(bot, subscription.user.telegram_id, CHANNEL_ID)
                 kick_user_from_channel(bot, subscription.user.telegram_id, CHAT_ID)
             # Фиксируем изменения в базе данных
             session.commit()
         except Exception as error:
-            logger.error(
-                f"Ошибка при check_subscription_validity: {str(error)}")
+            logger.error(f"Ошибка при check_subscription_validity: {str(error)}")
             session.rollback()
         finally:
             Session.remove()
@@ -363,8 +379,9 @@ def send_invite_link(updater) -> None:
                 invite_link = create_invite_link(
                     bot, subscription.end_datetime, CHANNEL_ID
                 )
-                chat_link = create_invite_link(
-                    bot, subscription.end_datetime, CHAT_ID)
+                time.sleep(1)
+                chat_link = create_invite_link(bot, subscription.end_datetime, CHAT_ID)
+                time.sleep(1)
                 # Присваиваем инвайт конкретному пользователю
                 if invite_link and chat_link:
                     subscription.subscription_link = invite_link
@@ -412,16 +429,16 @@ def send_invite_link(updater) -> None:
     return None
 
 
-# Отправляем уведомление подписчикам, продлившим подписку, о новом чате-болталке в 12:01 MSK
+# Отправляем уведомление подписчикам, продлившим подписку, о новом чате-болталке в 12:05 MSK
 def notify_about_new_chat(updater) -> None:
     bot = updater.bot
     notification_about_chat = (
         "Ма френд, привет!:)\n\n"
         "В этом месяце мы добавили новую функцию🪄\n"
-        "**Важное нововведение**❗️\n\n"
-        "Теперь у нас есть **чат клуба**, где мы можем с тобой и со всеми участниками клуба общаться!\n"
+        "Важное нововведение❗️\n\n"
+        "Теперь у нас есть чат клуба, где мы можем с тобой и со всеми участниками клуба общаться!\n"
         "Скорее переходи и вступай))\n\n"
-        "Ссылка-приглашение для вступления в **чат клуба «Sensei, for real!?»**:  {chat_link}\n\n"
+        "Ссылка-приглашение для вступления в чат клуба «Sensei, for real!?»:  {chat_link}\n\n"
         "Жду тебя ✨"
     )
     with create_session() as session:
@@ -430,7 +447,7 @@ def notify_about_new_chat(updater) -> None:
             yesterday = now - datetime.timedelta(days=1)
             # Получаем телеграм id пользователей с продленными подписками
             prolonged_users = (
-                session.query(User.telegram_id, Subscription.chat_link)
+                session.query(User.telegram_id, Subscription)
                 .join(Subscription, User.id == Subscription.user_id)
                 .filter(
                     and_(
@@ -442,12 +459,23 @@ def notify_about_new_chat(updater) -> None:
                 )
                 .all()
             )
-            for telegram_id, chat_link in prolonged_users:
+            for telegram_id, subscription in prolonged_users:
+                if not telegram_id:
+                    continue
+                if not subscription.chat_link:
+                    chat_link = create_invite_link(
+                        bot, subscription.end_datetime, CHAT_ID
+                    )
+                    if not chat_link:
+                        logger.error(f"Не удалось создать ссылку для {telegram_id}")
+                        continue
+                    subscription.chat_link = chat_link
                 try:
                     bot.send_message(
                         chat_id=telegram_id,
                         text=notification_about_chat.format(
-                            chat_link=chat_link),
+                            chat_link=subscription.chat_link
+                        ),
                         parse_mode="markdown",
                     )
                 except Exception as error:
@@ -456,8 +484,10 @@ def notify_about_new_chat(updater) -> None:
                         f"для пользователя с телеграм id: {telegram_id}\n"
                         f"Ошибка: {str(error)}"
                     )
+            session.commit()
         except Exception as error:
             logger.error(f"Ошибка при notify_about_new_chat: {str(error)}")
+            session.rollback()
         finally:
             Session.remove()
     return None
@@ -503,6 +533,8 @@ def test_postponed_task(update: Update, context: CallbackContext) -> None:
         send_invite_link(context)
     elif task_name == "handle_overlapping_subscriptions":
         handle_overlapping_subscriptions(context)
+    elif task_name == "notify_about_new_chat":
+        notify_about_new_chat(context)
     else:
         update.message.reply_text("Такой задачи не существует.")
         return None
