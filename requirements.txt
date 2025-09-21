@@ -1,5 +1,5 @@
 flask==3.0.3
-python-telegram-bot==13.13
+python-telegram-bot==22.4
 sqlalchemy==2.0.25
 psycopg2-binary==2.9.9
 psycopg2==2.9.9
@@ -8,3 +8,5 @@ python-dotenv==1.0.1
 gunicorn==22.0.0
 openpyxl==3.1.5
 pandas==2.2.2
+apscheduler==3.11.0
+asyncio==4.0.0

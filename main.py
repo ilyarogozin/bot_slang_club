@@ -1,16 +1,23 @@
-import datetime
 import re
-
-from apscheduler.schedulers.background import BackgroundScheduler
+import threading
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from flask import Flask, jsonify, request
-from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import (
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.ext import (
     CallbackContext,
     CommandHandler,
-    Filters,
+    filters,
     MessageHandler,
-    Updater,
+    ApplicationBuilder,
+    ConversationHandler,
+    CallbackQueryHandler,
+    Application,
 )
+from telegram.request import HTTPXRequest
 
 from constants import (
     MOSCOW_TZ,
@@ -19,8 +26,10 @@ from constants import (
     PHONE_NUMBER_REGEX,
     TELEGRAM_WEBHOOK,
     TOKEN,
+    WAITING_NUMBERS,
+    logger,
 )
-from database import Review, Session, User
+from database import Review, User, create_session
 from manager_commands import (
     change_phone_number,
     delete_subscription,
@@ -28,9 +37,14 @@ from manager_commands import (
     get_all_reviews,
     get_all_users,
     give_free_subscription,
-    notify_about_new_chat_personally,
     send_invite_link_personally,
     set_subscription_end_at,
+    send_bulk_messages,
+    process_numbers,
+    cancel,
+    button,
+    set_messages,
+    get_button_stats,
 )
 from postponed_tasks import (
     check_subscription_validity,
@@ -39,7 +53,6 @@ from postponed_tasks import (
     get_second_reminder_to_join_the_club,
     get_second_reminder_to_renew_the_subscription,
     handle_overlapping_subscriptions,
-    notify_about_new_chat,
     request_feedback_from_all_users,
     send_invite_link,
     test_postponed_task,
@@ -53,20 +66,16 @@ from user_commands import (
     show_linked_phone_number,
     write_review,
 )
-from utils import create_session, logger, update_subscription
+from utils import update_subscription
 
 app = Flask(__name__)
-updater = Updater(
-    TOKEN, use_context=True, request_kwargs={"connect_timeout": 10, "read_timeout": 20}
-)
-dispatcher = updater.dispatcher
 
 
 # Обрабатываем обновления от телеграма с вебхука
 @app.route(f"/{TELEGRAM_WEBHOOK}/", methods=["POST"])
 def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), dispatcher.bot)
-    dispatcher.process_update(update)
+    update = Update.de_json(request.get_json(force=True), app.bot)
+    app.process_update(update)
     return "ok"
 
 
@@ -97,7 +106,8 @@ def payment_webhook():
         # кроме цифр и знака "+"
         pattern = re.compile(r"[^\d+]")
         phone_number = pattern.sub("", phone_number)
-        amount_months = data.get("payment").get("products")[0].get("name").split()[-2]
+        amount_months = data.get("payment").get("products")[
+            0].get("name").split()[-2]
         if not amount_months:
             return (
                 jsonify(
@@ -123,7 +133,8 @@ def payment_webhook():
         tg = tg[1:] if tg.startswith("@") else tg
         # Обновляем подписку в соответствии с условиями
         update_subscription(
-            int(amount_months), phone_number, int(start_month), int(start_year), tg
+            int(amount_months), phone_number, int(
+                start_month), int(start_year), tg
         )
     except Exception as error:
         logger.error(f"payment webhook error: {str(error)}")
@@ -132,13 +143,12 @@ def payment_webhook():
 
 
 # Выводим логи ошибок, вызванных обновлениями
-def error(update: Update, context: CallbackContext) -> None:
+async def error(update: Update, context: CallbackContext) -> None:
     logger.warning('Update "%s" caused error "%s"', update, context.error)
-    return None
 
 
 # Обработчик текстовых сообщений-действий
-def handle_text(update: Update, context: CallbackContext) -> None:
+async def handle_text(update: Update, context: CallbackContext) -> None:
     try:
         user_text = update.message.text
         # Если ждем отзыв
@@ -151,7 +161,7 @@ def handle_text(update: Update, context: CallbackContext) -> None:
                 "Оставить отзыв ✍🏼",
                 "Техническая поддержка ⚙️",
             }:
-                update.message.reply_text("Отзыв отменён.")
+                await update.message.reply_text("Отзыв отменён.")
             else:
                 with create_session() as session:
                     telegram_id = update.message.from_user.id
@@ -163,35 +173,34 @@ def handle_text(update: Update, context: CallbackContext) -> None:
                     new_review = Review(review_text=user_text, user_id=user.id)
                     session.add(new_review)
                     session.commit()
-                Session.remove()
-                update.message.reply_text("Спасибо за ваш отзыв!")
+                await update.message.reply_text("Спасибо за ваш отзыв!")
             context.user_data["awaiting_review"] = False
             return None
 
         if PHONE_NUMBER_REGEX.match(user_text):
-            get_subscription_link(update, context, user_text)
+            await get_subscription_link(update, context, user_text)
         if user_text == "Получить ссылку 🏁":
-            get_subscription_link(update, context)
+            await get_subscription_link(update, context)
         elif user_text == "Срок действия подписки 🕑":
-            get_subscription_period(update, context)
+            await get_subscription_period(update, context)
         elif user_text == "Показать привязанный номер 📲":
-            show_linked_phone_number(update, context)
+            await show_linked_phone_number(update, context)
         elif user_text == "Демо-версия сленг-клуба 🖼️":
-            get_demo_version_of_club(update, context)
+            await get_demo_version_of_club(update, context)
         elif user_text == "Оставить отзыв ✍🏼":
-            write_review(update, context)
+            await write_review(update, context)
         elif user_text == "Техническая поддержка ⚙️":
-            get_technical_support(update, context)
+            await get_technical_support(update, context)
     except Exception as error:
         logger.error(str(error))
-        update.message.reply_text(
+        await update.message.reply_text(
             "Неизвестная ошибка. Обратитесь в техническую поддержку."
         )
     return None
 
 
 # Обработчик команды /start
-def start(update: Update, context: CallbackContext) -> None:
+async def start(update: Update, context: CallbackContext) -> None:
     contact_keyboard = KeyboardButton(
         text="Отправить номер телефона📞", request_contact=True
     )
@@ -202,7 +211,7 @@ def start(update: Update, context: CallbackContext) -> None:
         ["Демо-версия сленг-клуба 🖼️"],
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard)
-    update.message.reply_text(
+    await update.message.reply_text(
         "Для активации подписки отправь свой номер телефона в формате "
         "+7, либо с другим кодом страны. Номер телефона должен быть "
         "таким же, как вы указывали при оплате услуги.",
@@ -212,23 +221,32 @@ def start(update: Update, context: CallbackContext) -> None:
 
 
 # Обрабатываем номер телефона, который пользователь отправил с клавиатуры
-def handle_contact(update: Update, context: CallbackContext) -> None:
+async def handle_contact(update: Update, context: CallbackContext) -> None:
     contact = update.message.contact
     if contact is not None:
         phone_number = contact.phone_number
         if phone_number[0] != "+":
             phone_number = "+" + phone_number
-        get_subscription_link(update, context, phone_number)
+        await get_subscription_link(update, context, phone_number)
     return None
 
 
 def main() -> None:
     # Устанавливаем вебхук
     # webhook_url = f"https://{DOMAIN}/{TELEGRAM_WEBHOOK}/"
-    # updater.bot.setWebhook(webhook_url)
+    # application.bot.setWebhook(webhook_url)
     # Обработчик для текста
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler(
+            "send_bulk_messages", send_bulk_messages)],
+        states={
+            WAITING_NUMBERS: [MessageHandler(
+                filters.TEXT & ~filters.COMMAND, process_numbers)]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
     text_handler = MessageHandler(
-        Filters.text & ~Filters.command & ~Filters.regex("#"), handle_text
+        filters.TEXT & ~filters.COMMAND & ~filters.Regex("#"), handle_text
     )
     start_handler = CommandHandler("start", start)
     handler_free_subscription = CommandHandler(
@@ -240,7 +258,8 @@ def main() -> None:
     handler_change_phone_number = CommandHandler(
         "change_phone_number", change_phone_number
     )
-    handler_get_all_reviews = CommandHandler("get_all_reviews", get_all_reviews)
+    handler_get_all_reviews = CommandHandler(
+        "get_all_reviews", get_all_reviews)
     handler_get_all_users = CommandHandler("get_all_users", get_all_users)
     get_invitation_handler = CommandHandler("get_invitation", get_invitation)
     test_postponed_task_handler = CommandHandler(
@@ -254,121 +273,123 @@ def main() -> None:
     )
     delete_user_handler = CommandHandler("delete_user", delete_user)
     # Обработчик номера телефона, отправленного с клавиатуры
-    contact_handler = MessageHandler(Filters.contact, handle_contact)
-    notify_about_new_chat_personally_handler = CommandHandler(
-        "notify_about_new_chat_personally", notify_about_new_chat_personally
+    contact_handler = MessageHandler(filters.CONTACT, handle_contact)
+
+    async def post_init(app: Application):
+        scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
+
+        # Задача с запросом обратной связи на 26-е число каждого месяца в 14:00 MSK
+        scheduler.add_job(
+            request_feedback_from_all_users,
+            "cron",
+            day=26,
+            hour=14,
+            minute=0,
+            args=[app],
+        )
+        # Задача с напоминанием о продлении подписки на
+        # 25-е число каждого месяца в 12:00 MSK
+        scheduler.add_job(
+            get_first_reminder_to_renew_the_subscription,
+            "cron",
+            day=25,
+            hour=12,
+            minute=0,
+            args=[app],
+        )
+        # Задача с напоминанием о продлении подписки на последнее
+        # число каждого месяца в 12:00 MSK
+        scheduler.add_job(
+            get_second_reminder_to_renew_the_subscription,
+            "cron",
+            day="last",
+            hour=12,
+            minute=0,
+            args=[app],
+        )
+        # Задача на первое число каждого месяца в 15:00 MSK
+        scheduler.add_job(
+            get_first_reminder_to_join_the_club,
+            "cron",
+            day=1,
+            hour=15,
+            minute=0,
+            args=[app],
+        )
+        # Задача на первое число каждого месяца в 17:00 MSK
+        scheduler.add_job(
+            get_second_reminder_to_join_the_club,
+            "cron",
+            day=1,
+            hour=17,
+            minute=0,
+            args=[app],
+        )
+        # Проверяем валидность подписки у всех пользователей
+        # первого числа каждого месяца в 18:10 MSK
+        scheduler.add_job(
+            check_subscription_validity,
+            "cron",
+            day=1,
+            hour=18,
+            minute=10,
+            args=[app],
+        )
+        # Задача для отправки инвайта новым подписчикам и сообщения о
+        # продлении старым на первое число каждого месяца в 12:00 MSK
+        scheduler.add_job(
+            send_invite_link,
+            "cron",
+            day=1,
+            hour=12,
+            minute=0,
+            args=[app],
+        )
+        # Задача для слияния пересекающихся подписок с интервалом в один день
+        scheduler.add_job(
+            handle_overlapping_subscriptions,
+            "interval",
+            minutes=9,
+            args=[app],
+            coalesce=True,
+            misfire_grace_time=60,
+        )
+
+        scheduler.start()
+
+    request_settings = HTTPXRequest(connect_timeout=10, read_timeout=20)
+    application = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .request(request_settings)
+        .post_init(post_init)
+        .build()
     )
 
     # Регистрируем все ошибки
-    dispatcher.add_error_handler(error)
+    application.add_error_handler(error)
 
-    dispatcher.add_handler(notify_about_new_chat_personally_handler)
-    dispatcher.add_handler(delete_user_handler)
-    dispatcher.add_handler(send_invite_link_personally_handler)
-    dispatcher.add_handler(set_subscription_end_at_handler)
-    dispatcher.add_handler(test_postponed_task_handler)
-    dispatcher.add_handler(contact_handler)
-    dispatcher.add_handler(text_handler)
-    dispatcher.add_handler(get_invitation_handler)
-    dispatcher.add_handler(start_handler)
-    dispatcher.add_handler(handler_get_all_users)
-    dispatcher.add_handler(handler_get_all_reviews)
-    dispatcher.add_handler(handler_change_phone_number)
-    dispatcher.add_handler(handler_delete_subscription)
-    dispatcher.add_handler(handler_free_subscription)
+    application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(CommandHandler("set_messages", set_messages))
+    application.add_handler(CommandHandler(
+        "get_button_stats", get_button_stats))
+    application.add_handler(delete_user_handler)
+    application.add_handler(send_invite_link_personally_handler)
+    application.add_handler(set_subscription_end_at_handler)
+    application.add_handler(test_postponed_task_handler)
+    application.add_handler(contact_handler)
+    application.add_handler(text_handler)
+    application.add_handler(get_invitation_handler)
+    application.add_handler(start_handler)
+    application.add_handler(handler_get_all_users)
+    application.add_handler(handler_get_all_reviews)
+    application.add_handler(handler_change_phone_number)
+    application.add_handler(handler_delete_subscription)
+    application.add_handler(handler_free_subscription)
 
-    scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
-
-    # Задача с запросом обратной связи на 26-е число каждого месяца в 14:00 MSK
-    scheduler.add_job(
-        request_feedback_from_all_users,
-        "cron",
-        day=26,
-        hour=14,
-        minute=0,
-        args=[updater],
-    )
-    # Задача с напоминанием о продлении подписки на
-    # 25-е число каждого месяца в 17:00 MSK
-    scheduler.add_job(
-        get_first_reminder_to_renew_the_subscription,
-        "cron",
-        day=25,
-        hour=17,
-        minute=0,
-        args=[updater],
-    )
-    # Задача с напоминанием о продлении подписки на последнее
-    # число каждого месяца в 12:00 MSK
-    scheduler.add_job(
-        get_second_reminder_to_renew_the_subscription,
-        "cron",
-        day="last",
-        hour=12,
-        minute=0,
-        args=[updater],
-    )
-    # Задача на первое число каждого месяца в 16:00 MSK
-    scheduler.add_job(
-        get_first_reminder_to_join_the_club,
-        "cron",
-        day=1,
-        hour=15,
-        minute=0,
-        args=[updater],
-    )
-    # Задача на первое число каждого месяца в 18:00 MSK
-    scheduler.add_job(
-        get_second_reminder_to_join_the_club,
-        "cron",
-        day=1,
-        hour=17,
-        minute=0,
-        args=[updater],
-    )
-    # Проверяем валидность подписки у всех пользователей
-    # первого числа каждого месяца в 18:10 MSK
-    scheduler.add_job(
-        check_subscription_validity,
-        "cron",
-        day=1,
-        hour=18,
-        minute=10,
-        args=[updater],
-    )
-    # Задача для отправки инвайта новым подписчикам и сообщения о
-    # продлении старым на первое число каждого месяца в 12:00 MSK
-    scheduler.add_job(
-        send_invite_link,
-        "cron",
-        day=1,
-        hour=12,
-        minute=0,
-        args=[updater],
-    )
-    # Задача для слияния пересекающихся подписок с интервалом в один день
-    scheduler.add_job(
-        handle_overlapping_subscriptions,
-        "interval",
-        minutes=10,
-        args=[updater],
-    )
-    # Задача для уведомления о новом чате-болталке
-    # для пользователей, продливших подписку
-    # Время выполнения задачи: 1 сентября текущего года в 12:05 MSK
-    execution_time = datetime.datetime(2024, 9, 1, 12, 5)
-    scheduler.add_job(
-        notify_about_new_chat,
-        "date",
-        run_date=execution_time,
-        args=[updater],
-        replace_existing=True,
-    )
-
-    scheduler.start()
-    updater.start_polling()
-    updater.idle()
-    app.run(port=5001, debug=False)
+    threading.Thread(target=lambda: app.run(port=5001, debug=False)).start()
+    application.run_polling()
 
 
 if __name__ == "__main__":

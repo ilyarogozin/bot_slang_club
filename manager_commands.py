@@ -1,11 +1,14 @@
 import datetime
-import time
 from io import BytesIO
+from openpyxl.utils import get_column_letter
 
 import pandas as pd
 from sqlalchemy import asc
-from telegram import Update
-from telegram.ext import CallbackContext
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    CallbackContext,
+    ConversationHandler,
+)
 
 from constants import (
     CHANNEL_ID,
@@ -14,35 +17,48 @@ from constants import (
     MOSCOW_TZ,
     PHONE_NUMBER_REGEX,
     TEXT_INVITATION,
+    WAITING_NUMBERS,
+    logger,
 )
-from database import Review, Session, Subscription, User
+from database import (
+    Review,
+    Session,
+    Subscription,
+    User,
+    ButtonStat,
+    get_user_by_phone,
+    set_messages_acceptable_by_phone,
+    set_messages_acceptable,
+    log_button_click,
+    get_phone_by_telegram_id,
+    create_session,
+)
 from utils import (
     check_user_in_channel,
     create_invite_link,
-    create_session,
-    logger,
     update_subscription,
+    restricted,
 )
 
 
 # Установить конец подписки вручную через команду /set_subscription_end_at
-def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     # Обрабатываем возможные ошибки при введении аргументов
     args = context.args
     if len(args) != 2:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите команду в формате: /set_subscription_end_at год:месяц:день:часы:минуты номер_телефона\n"
             "Одним сообщением, в одну строку."
         )
         return None
     manual_datetime, phone_number = args
     if not PHONE_NUMBER_REGEX.match(phone_number):
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите номер телефона вида: +71112223331"
         )
         return None
@@ -51,7 +67,7 @@ def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
         year, month, day, hour, minute = manual_datetime
     except Exception as error:
         logger.error(f"Ошибка ввода конца подписки: {error}")
-        update.message.reply_text(
+        await update.message.reply_text(
             "Вы где-то ошиблись в этом параметре: год:месяц:день:часы:минуты. Попробуйте снова."
             "Должно быть например: 2024:7:21:12:45"
         )
@@ -74,7 +90,7 @@ def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
             )
             # Проверяем наличие пользователя
             if not user_id:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Пользователя с таким номером телефона не существует."
                 )
                 return None
@@ -84,7 +100,7 @@ def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
                 )
                 session.add(new_subscription)
                 session.commit()
-                update.message.reply_text(
+                await update.message.reply_text(
                     f"Конец подписки успешно изменён на {end_datetime.strftime('%d-%m-%Y %H:%M')} "
                     f"у пользователя с номером телефона: {phone_number}."
                 )
@@ -93,7 +109,7 @@ def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
             nearest_subscription.end_datetime = end_datetime
             # Фиксируем изменения
             session.commit()
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"Конец подписки успешно изменён на {end_datetime.strftime('%d-%m-%Y %H:%M')} "
                 f"у пользователя с номером телефона: {phone_number}."
             )
@@ -106,16 +122,16 @@ def set_subscription_end_at(update: Update, context: CallbackContext) -> None:
 
 
 # По этой команде даём пользователю бесплатную подписку по номеру телефона
-def give_free_subscription(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def give_free_subscription(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     # Получаем номер телефона пользователя и количество месяцев из команды
     args = context.args
     if len(args) != 4:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите команду в формате: /give_free_subscription "
             "номер_телефона количество_месяцев номер_стартового_месяца год_стартового_месяца\n"
             "Пример: /give_free_subscription +79998887776 1 9 2024\n"
@@ -125,7 +141,7 @@ def give_free_subscription(update: Update, context: CallbackContext) -> None:
     # Обрабатываем возможные ошибки при введении аргументов
     phone_number, months, start_month, start_year = args
     if not PHONE_NUMBER_REGEX.match(phone_number):
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите номер телефона вида: +71112223331"
         )
         return None
@@ -134,29 +150,19 @@ def give_free_subscription(update: Update, context: CallbackContext) -> None:
         start_month = int(start_month)
         start_year = int(start_year)
     except ValueError:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите количество месяцев, месяц начала и год числом."
         )
         return None
-    # now = datetime.datetime.now()
-    # if start_year < now.year:
-    #     update.message.reply_text(
-    #         "Пожалуйста, введите год начала не раньше нынешнего.")
-    #     return None
-    # if start_month < now.month:
-    #     update.message.reply_text(
-    #         "Пожалуйста, введите месяц начала не раньше нынешнего."
-    #     )
-    #     return None
     if months < 0:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите положительное количество месяцев."
         )
         return None
     # Даём пользователю бесплатную подписку
     update_subscription(months, phone_number, start_month, start_year, "-")
     # Отвечаем, что всё прошло успешно
-    update.message.reply_text(
+    await update.message.reply_text(
         f"Пользователю с номером {phone_number} была предоставлена подписка на {months} месяцев, "
         f"старт подписки {start_month} месяца {start_year} года."
     )
@@ -164,16 +170,16 @@ def give_free_subscription(update: Update, context: CallbackContext) -> None:
 
 
 # Функция для удаления ближайшей подписки пользователя
-def delete_subscription(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def delete_subscription(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     # Обрабатываем возможные ошибки при введении аргументов
     args = context.args
     if len(args) != 1:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите команду в формате: /delete_subscription номер_телефона\n"
             "Будет удалена самая ближайшая подписка.\n"
             "Одним сообщением, в одну строку."
@@ -181,7 +187,7 @@ def delete_subscription(update: Update, context: CallbackContext) -> None:
         return None
     phone_number = args[0]
     if not PHONE_NUMBER_REGEX.match(phone_number):
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите номер телефона вида: +71112223331"
         )
         return None
@@ -194,7 +200,7 @@ def delete_subscription(update: Update, context: CallbackContext) -> None:
                 .first()[0]
             )
             if not user_id:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Пользователя с таким телефонным номером не существует."
                 )
                 return None
@@ -206,17 +212,17 @@ def delete_subscription(update: Update, context: CallbackContext) -> None:
             )
             # Если нет подписки
             if not nearest_subscription:
-                update.message.reply_text(
+                await update.message.reply_text(
                     f"У пользователя {phone_number} нет подписки."
                 )
                 return None
             # Отменяем ссылку-приглашение в канал и чат-болталку, если есть
             if nearest_subscription.subscription_link:
                 try:
-                    context.bot.revoke_chat_invite_link(
+                    await context.bot.revoke_chat_invite_link(
                         CHANNEL_ID, nearest_subscription.subscription_link
                     )
-                    context.bot.revoke_chat_invite_link(
+                    await context.bot.revoke_chat_invite_link(
                         CHAT_ID, nearest_subscription.chat_link
                     )
                 except Exception as error:
@@ -229,7 +235,7 @@ def delete_subscription(update: Update, context: CallbackContext) -> None:
             # Фиксируем изменения в базе данных
             session.commit()
             # Сообщаем, что всё прошло успешно
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"Ближайшая подписка пользователя {phone_number} успешно удалена."
             )
         except Exception as error:
@@ -241,16 +247,16 @@ def delete_subscription(update: Update, context: CallbackContext) -> None:
 
 
 # Функция для изменения номера телефона пользователя
-def change_phone_number(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def change_phone_number(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     # Обрабатываем возможные ошибки при введении аргументов
     args = context.args
     if len(args) != 2:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите команду в формате: /change_phone_number старый_номер__пользователя новый_номер_телефона\n"
             "Одним сообщением, в одну строку."
         )
@@ -259,7 +265,7 @@ def change_phone_number(update: Update, context: CallbackContext) -> None:
     if not PHONE_NUMBER_REGEX.match(old_phone_number) or not PHONE_NUMBER_REGEX.match(
         new_phone_number
     ):
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите номер телефона вида: +71112223331"
         )
         return None
@@ -272,7 +278,7 @@ def change_phone_number(update: Update, context: CallbackContext) -> None:
                 .first()
             )
             if user:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Номер телефона, на который вы хотите поменять, уже принадлежит другому пользователю."
                 )
                 return None
@@ -282,7 +288,7 @@ def change_phone_number(update: Update, context: CallbackContext) -> None:
                 .first()
             )
             if not user:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Пользователя с таким нмоером телефона не существует."
                 )
                 return None
@@ -291,7 +297,7 @@ def change_phone_number(update: Update, context: CallbackContext) -> None:
             # Обновляем запись базы данных
             session.commit()
             # Сообщаем, что всё прошло успешно
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"Номер телефона успешно изменён на {new_phone_number} у пользователя с прошлым номером: {old_phone_number}."
             )
         except Exception as error:
@@ -303,20 +309,19 @@ def change_phone_number(update: Update, context: CallbackContext) -> None:
 
 
 # Получаем все отзывы пользователей в файле excel
-def get_all_reviews(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def get_all_reviews(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     with create_session() as session:
         # Запрашиваем данные из базы
         query = session.query(
             Review.review_text, User.phone_number, User.user_link
         ).join(User)
-    Session.remove()
     if query.count() == 0:
-        update.message.reply_text("Новых отзывов не найдено.")
+        await update.message.reply_text("Новых отзывов не найдено.")
         return None
     # Преобразуем результаты запроса в DataFrame
     df = pd.read_sql(query.statement, query.session.bind)
@@ -343,18 +348,18 @@ def get_all_reviews(update: Update, context: CallbackContext) -> None:
                 worksheet.column_dimensions[column].width = adjusted_width
         output.seek(0)  # Перемещаемся к началу потока
         # Отправляем файл пользователю
-        context.bot.send_document(
+        await context.bot.send_document(
             chat_id=update.effective_chat.id, document=output, filename="reviews.xlsx"
         )
     return None
 
 
 # Получаем всех пользователей в файле excel
-def get_all_users(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def get_all_users(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     with create_session() as session:
         # Получаем всех пользователей
@@ -396,11 +401,11 @@ def get_all_users(update: Update, context: CallbackContext) -> None:
                             unjoined_users_data.append(user_data)
                             unjoined_in_chat_data.append(user_data)
                             continue
-                        if not check_user_in_channel(
+                        if not await check_user_in_channel(
                             context, sub.user.telegram_id, CHANNEL_ID
                         ):
                             unjoined_users_data.append(user_data)
-                        if not check_user_in_channel(
+                        if not await check_user_in_channel(
                             context, sub.user.telegram_id, CHAT_ID
                         ):
                             unjoined_in_chat_data.append(user_data)
@@ -441,30 +446,30 @@ def get_all_users(update: Update, context: CallbackContext) -> None:
                     worksheet.column_dimensions[column].width = adjusted_width
         output.seek(0)  # Перемещаемся к началу потока
         # Отправляем файл пользователю
-        context.bot.send_document(
+        await context.bot.send_document(
             chat_id=update.effective_chat.id, document=output, filename="users.xlsx"
         )
     return None
 
 
 # Отправить ссылку-приглашение персонально одному пользователю
-def send_invite_link_personally(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def send_invite_link_personally(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     # Обрабатываем возможные ошибки при введении аргументов
     args = context.args
     if len(args) != 1:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите команду в формате: /send_invite_link_personally номер_телефона\n"
             "Одним сообщением, в одну строку."
         )
         return None
     phone_number = args[0]
     if not PHONE_NUMBER_REGEX.match(phone_number):
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите номер телефона вида: +71112223331"
         )
         return None
@@ -473,7 +478,7 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
             user = session.query(User).filter(User.phone_number == phone_number).first()
             # Проверяем наличие пользователя
             if not user:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Пользователя с таким номером телефона не существует."
                 )
                 return None
@@ -485,14 +490,14 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
             )
             # Если нет подписки
             if not nearest_subscription:
-                update.message.reply_text(
+                await update.message.reply_text(
                     f"У пользователя {phone_number} нет подписки."
                 )
                 return None
             # Проверяем наличие ссылки-приглашения
             if nearest_subscription.subscription_link:
                 if user.telegram_id:
-                    context.bot.send_message(
+                    await context.bot.send_message(
                         chat_id=user.telegram_id,
                         text=TEXT_INVITATION.format(
                             invite_link=nearest_subscription.subscription_link,
@@ -500,11 +505,11 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                         ),
                     )
                     # Отвечаем, что всё прошло успешно
-                    update.message.reply_text(
+                    await update.message.reply_text(
                         f"Пользователю с номером {phone_number} успешно отправлена ссылка-приглашение."
                     )
                     return None
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Ссылка-приглашение создана и привязана, но не отправлена, "
                     "так как у пользователя отсутствует привязанный телеграм id."
                 )
@@ -513,18 +518,16 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                 MOSCOW_TZ
             ) <= datetime.datetime.now(MOSCOW_TZ):
                 # Создаём ссылку, если отсутствует
-                invite_link = create_invite_link(
+                invite_link = await create_invite_link(
                     context.bot,
                     nearest_subscription.end_datetime.astimezone(MOSCOW_TZ),
                     CHANNEL_ID,
                 )
-                time.sleep(1)
-                chat_link = create_invite_link(
+                chat_link = await create_invite_link(
                     context.bot,
                     nearest_subscription.end_datetime.astimezone(MOSCOW_TZ),
                     CHAT_ID,
                 )
-                time.sleep(1)
                 # Присваиваем инвайт конкретному пользователю
                 if invite_link and chat_link:
                     nearest_subscription.subscription_link = invite_link
@@ -532,18 +535,18 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                     session.commit()
                     # Отправляем текст с инвайтом
                     if user.telegram_id:
-                        context.bot.send_message(
+                        await context.bot.send_message(
                             chat_id=user.telegram_id,
                             text=TEXT_INVITATION.format(
                                 invite_link=invite_link, chat_link=chat_link
                             ),
                         )
                         # Отвечаем, что всё прошло успешно
-                        update.message.reply_text(
+                        await update.message.reply_text(
                             f"Пользователю с номером {phone_number} успешно отправлена ссылка-приглашение."
                         )
                         return None
-                    update.message.reply_text(
+                    await update.message.reply_text(
                         "Ссылка-приглашение создана и привязана, но не отправлена, "
                         "так как у пользователя отсутствует привязанный телеграм id."
                     )
@@ -552,9 +555,9 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
                     f"Не удалось создать сhat_link или invite_link для телеграм id: {user.telegram_id}\n"
                     "Соответственно сообщение-приглашение не отправлено при задаче send_invite_link"
                 )
-                update.message.reply_text("Не удалось создать ссылку-приглашение.")
+                await update.message.reply_text("Не удалось создать ссылку-приглашение.")
                 return None
-            update.message.reply_text(
+            await update.message.reply_text(
                 "Ссылка-приглашение не может быть создана, так как период подписки ещё не начался."
             )
         except Exception as error:
@@ -566,23 +569,23 @@ def send_invite_link_personally(update: Update, context: CallbackContext) -> Non
 
 
 # Функция для удаления пользователя
-def delete_user(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
+async def delete_user(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text("Запрос обрабатывается...")
     # Проверяем, является ли пользователь команды модератором
     if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
+        await update.message.reply_text("Вы не являетесь модератором.")
         return None
     # Обрабатываем возможные ошибки при введении аргументов
     args = context.args
     if len(args) != 1:
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите команду в формате: /delete_user номер_телефона\n"
             "Одним сообщением, в одну строку."
         )
         return None
     phone_number = args[0]
     if not PHONE_NUMBER_REGEX.match(phone_number):
-        update.message.reply_text(
+        await update.message.reply_text(
             "Пожалуйста, введите номер телефона вида: +71112223331"
         )
         return None
@@ -591,95 +594,246 @@ def delete_user(update: Update, context: CallbackContext) -> None:
             # Проверяем наличие пользователя
             user = session.query(User).filter(User.phone_number == phone_number).first()
             if not user:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Пользователя с таким телефонным номером не существует."
                 )
                 return None
             session.delete(user)
             session.commit()
             # Сообщаем, что всё прошло успешно
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"Пользователь с номером {phone_number} успешно удален."
             )
         except Exception as error:
             logger.error(f"Ошибка при delete_user: {str(error)}")
             session.rollback()
-        finally:
-            Session.remove()
     return None
 
 
-# Отправляем уведомление о новом чате персонально
-def notify_about_new_chat_personally(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text("Запрос обрабатывается...")
-    # Проверяем, является ли пользователь команды модератором
-    if update.message.from_user.id not in MODERATOR_IDS:
-        update.message.reply_text("Вы не являетесь модератором.")
-        return None
-    # Обрабатываем возможные ошибки при введении аргументов
-    args = context.args
-    if len(args) != 1:
-        update.message.reply_text(
-            "Пожалуйста, введите команду в формате: /notify_about_new_chat_personally телеграм_id\n"
-            "Одним сообщением, в одну строку."
-        )
-        return None
-    telegram_id = args[0]
-    if not telegram_id.isdigit():
-        update.message.reply_text("Телеграм id должен быть числом")
-        return None
-    telegram_id = int(telegram_id)
-    bot = context.bot
-    notification_about_chat = (
-        "Ма френд, привет!:)\n\n"
-        "В этом месяце мы добавили новую функцию🪄\n"
-        "Важное нововведение❗️\n\n"
-        "Теперь у нас есть чат клуба, где мы можем с тобой и со всеми участниками клуба общаться!\n"
-        "Скорее переходи и вступай))\n\n"
-        "Ссылка-приглашение для вступления в чат клуба «Sensei, for real!?»:  {chat_link}\n\n"
-        "Жду тебя ✨"
+async def send_bulk_messages(update: Update, context: CallbackContext):
+    if not await restricted(update):
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "Введите список номеров (через пробел, запятую или с новой строки):"
     )
+    return WAITING_NUMBERS
+
+
+async def process_numbers(update: Update, context: CallbackContext):
+    if not await restricted(update):
+        return ConversationHandler.END
+
+    raw_text = update.message.text.strip()
+    numbers = [n.strip() for n in raw_text.replace(",", " ").split() if n.strip()]
+
+    not_found, failed, sent, blocked = [], [], [], []
+
+    for phone in numbers:
+        user = get_user_by_phone(phone)
+
+        if not user:
+            not_found.append(phone)
+            continue
+
+        telegram_id, acceptable = user
+
+        if not acceptable:
+            blocked.append(phone)
+            continue
+
+        try:
+            text = (
+                "Привет! \n"
+                "Это Василиса из клуба Sensei, for real?!\n"
+                "Вы были с нами раньше — спасибо ❤️\n\n"
+                "С тех пор многое поменялось:\n\n"
+                "🤖 AI-Sensei — появился ваш личный ИИ-преподаватель\n"
+                "🗣 Подкасты от native speakers\n"
+                "👩🏼‍💻 Ежедневные посты и ежемесячный Zoom\n"
+                "❤️‍🔥 Цена теперь 490 ₽\n\n"
+                "В знак благодарности — подарок: PDF «Словарик современного сленга 2025»."
+            )
+            keyboard = [
+                [InlineKeyboardButton("🎁 Получить бонус", callback_data="bonus")],
+                [InlineKeyboardButton("👀 Что нового?", callback_data="news")],
+                [InlineKeyboardButton("🚫 Не беспокоить", callback_data="stop")]
+            ]
+            await context.bot.send_message(
+                chat_id=telegram_id,
+                text=text,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            sent.append(phone)
+
+        except Exception as e:
+            logger.error(f"Ошибка при отправке {phone}: {e}")
+            failed.append(phone)
+
+    report = []
+    if sent:
+        report.append("✅ Успешно отправлено: " + ", ".join(sent))
+    if not_found:
+        report.append("❌ Нет в базе: " + ", ".join(not_found))
+    if blocked:
+        report.append("🚫 Не принимают сообщения: " + ", ".join(blocked))
+    if failed:
+        report.append("⚠️ Ошибка при отправке: " + ", ".join(failed))
+
+    await update.message.reply_text("\n".join(report) if report else "Номера не обработаны.")
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: CallbackContext):
+    if not await restricted(update):
+        return ConversationHandler.END
+
+    await update.message.reply_text("Рассылка отменена.")
+    return ConversationHandler.END
+
+
+# Экспорт статистики кнопок в Excel через pandas
+def export_button_stats_to_excel(filename="button_stats.xlsx"):
     with create_session() as session:
         try:
-            user = session.query(User).filter(User.telegram_id == telegram_id).first()
-            if not user:
-                update.message.reply_text(
-                    "Пользователя с таким телеграм id не существует."
-                )
-                return None
-            subscription = user.subscriptions[0]
-            if not subscription:
-                update.message.reply_text("У пользователя отсутствует подписка.")
-                return None
-            if not subscription.chat_link:
-                chat_link = create_invite_link(bot, subscription.end_datetime, CHAT_ID)
-                if not chat_link:
-                    update.message.reply_text(
-                        f"Не удалось создать ссылку для {user.telegram_id}"
-                    )
-                    return None
-                subscription.chat_link = chat_link
-            try:
-                bot.send_message(
-                    chat_id=user.telegram_id,
-                    text=notification_about_chat.format(
-                        chat_link=subscription.chat_link
-                    ),
-                )
-            except Exception as error:
-                logger.error(
-                    "Ошибка при отправки сообщения в notify_about_new_chat_personally "
-                    f"для пользователя с телеграм id: {user.telegram_id}\n"
-                    f"Ошибка: {str(error)}"
-                )
-            else:
-                update.message.reply_text(
-                    f"Пользователю с телеграм id {user.telegram_id} успешно отправлено уведомление"
-                )
-            session.commit()
-        except Exception as error:
-            logger.error(f"Ошибка при notify_about_new_chat: {str(error)}")
-            session.rollback()
+            week_ago = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+
+            # ORM-запрос
+            query = (
+                session.query(ButtonStat.phone_number, ButtonStat.button, ButtonStat.timestamp)
+                .filter(ButtonStat.timestamp >= week_ago)
+                .order_by(ButtonStat.timestamp.desc())
+            )
+
+            # Загружаем результат в pandas
+            df = pd.read_sql(query.statement, session.bind)
+
+            # Пишем сразу в Excel
+            with pd.ExcelWriter(filename, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name="Button Stats", index=False)
+
+                worksheet = writer.sheets["Button Stats"]
+                for i, column in enumerate(df.columns, 1):
+                    max_len = max(df[column].astype(str).map(len).max(), len(column)) + 2
+                    col_letter = get_column_letter(i)
+                    worksheet.column_dimensions[col_letter].width = max_len
+
+            return filename
+
         finally:
-            Session.remove()
-    return None
+            session.close()
+
+
+async def get_button_stats(update: Update, context: CallbackContext):
+    await update.message.reply_text("Запрос обрабатывается...")
+    if not await restricted(update):
+        return
+
+    filename = "button_stats.xlsx"
+    export_button_stats_to_excel(filename)
+
+    await update.message.reply_document(
+        document=open(filename, "rb"),
+        filename=filename,
+        caption="📊 Статистика по нажатиям кнопок"
+    )
+
+
+async def set_messages(update: Update, context: CallbackContext):
+    if not await restricted(update):
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text("Использование: /set_messages <phone> <0|1>")
+        return
+
+    phone, flag = context.args
+    if flag not in ("0", "1"):
+        await update.message.reply_text("Второй аргумент должен быть 0 или 1")
+        return
+
+    ok = set_messages_acceptable_by_phone(phone, bool(int(flag)))
+    if ok:
+        await update.message.reply_text(
+            f"✅ Для номера {phone} сообщения {'разрешены' if flag == '1' else 'запрещены'}."
+        )
+    else:
+        await update.message.reply_text(f"❌ Номер {phone} не найден в базе.")
+
+
+async def main_menu(update_or_query, context: CallbackContext):
+    """Главный экран"""
+    text = (
+        "Привет! \n"
+        "Это Василиса из клуба Sensei, for real?!\n"
+        "Вы были с нами раньше — спасибо ❤️\n\n"
+        "С тех пор многое поменялось:\n\n"
+        "🤖 AI-Sensei — появился ваш личный ИИ-преподаватель\n"
+        "🗣 Подкасты от native speakers\n"
+        "👩🏼‍💻 Ежедневные посты и ежемесячный Zoom\n\n"
+        "❤️‍🔥 Цена теперь 490 ₽\n\n"
+        "В знак благодарности — подарок: PDF «Словарик современного сленга 2025»."
+    )
+    keyboard = [
+        [InlineKeyboardButton("🎁 Получить бонус", callback_data="bonus")],
+        [InlineKeyboardButton("👀 Что нового?", callback_data="news")],
+        [InlineKeyboardButton("🚫 Не беспокоить", callback_data="stop")]
+    ]
+
+    if isinstance(update_or_query, Update):
+        if update_or_query.message:
+            await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:  # callback_query
+        await update_or_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    user_phone = get_phone_by_telegram_id(user_id)
+
+    # фиксируем нажатие
+    log_button_click(user_phone, query.data)
+
+    if query.data == "news":
+        text = (
+            "🤖 AI-Sensei: персональный ИИ-тичер → объясняет, тренирует, исправляет мягко\n\n"
+            "🗣 Подкасты от носителей: для прокачки аутентичного произношения и аудирования\n\n"
+            "👩🏼‍💻 Zoom 1×/мес: мини-уроки\n\n"
+            "📱 Посты ежедневно: самый актуальный контент"
+        )
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Вернуться в клуб за 490₽", url="https://vasilisa-slang.ru/#subscribe", callback_data="club")],
+            [InlineKeyboardButton("🏠 На главный экран", callback_data="main")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data == "bonus":
+        await query.message.reply_document(
+            document=open("🥤Словарик_современного_сленга_Классическая_версия.pdf", "rb"),
+            filename="🥤Словарик_современного_сленга_Классическая_версия.pdf",
+            caption="💅🏻 Держите ваш подарок!"
+        )
+        text = (
+            "Готовы примерить это в речи?\n"
+            "Наш клубный 🤖 AI-Sensei проведет с вами полноценный урок."
+        )
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Вернуться в клуб за 490₽", url="https://vasilisa-slang.ru/#subscribe", callback_data="club")],
+            [InlineKeyboardButton("🤖 Занятие с Сенсеем", url="https://t.me/sensei_for_real/545", callback_data="lesson")],
+            [InlineKeyboardButton("🏠 На главный экран", callback_data="main")]
+        ]
+        await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data == "stop":
+        user_id = query.from_user.id
+        set_messages_acceptable(user_id, False)
+        text = (
+            "Понял. Больше писать не будем. Спасибо, что были с нами. "
+            "Если захотите вернуться — мы рядом ❤️‍🔥"
+        )
+        await query.edit_message_text(text)
+
+    elif query.data == "main":
+        await main_menu(query, context)

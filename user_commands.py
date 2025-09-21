@@ -8,16 +8,17 @@ from telegram.ext import CallbackContext
 from constants import (
     CHANNEL_ID,
     CHAT_ID,
-    LINK_COMING_SOON,
+    LINK_IS_EMPTY,
     TEXT_INVITATION,
     THESE_ARE_YOUR_LINKS,
+    logger,
 )
-from database import Session, Subscription, User
-from utils import create_invite_link, create_session, logger
+from database import Session, Subscription, User, create_session
+from utils import create_invite_link
 
 
 # Обработчик сообщения 'Получить ссылку 🏁'
-def get_subscription_link(
+async def get_subscription_link(
     update: Update, context: CallbackContext, phone_number: Optional[str] = None
 ) -> None:
     not_found_text = (
@@ -43,14 +44,14 @@ def get_subscription_link(
         try:
             # Если передан номер телефона
             if phone_number:
-                update.message.reply_text(check_payment_text)
+                await update.message.reply_text(check_payment_text)
                 user = (
                     session.query(User)
                     .filter(User.phone_number == phone_number)
                     .first()
                 )
                 if not user:
-                    update.message.reply_text(not_found_text)
+                    await update.message.reply_text(not_found_text)
                     return None
                 # Проверяем, что телеграм id пользователя ещё не привязан
                 # к какому-либо телефонному номеру
@@ -61,7 +62,7 @@ def get_subscription_link(
                         .first()
                     )
                     if user_from_id:
-                        update.message.reply_text(telegram_id_already_has_phone)
+                        await update.message.reply_text(telegram_id_already_has_phone)
                         return None
                 # Обновляем телеграм id и телеграм ссылку пользователя
                 user.telegram_id = update.message.chat_id
@@ -76,16 +77,16 @@ def get_subscription_link(
                     .first()
                 )
                 if not nearest_subscription:
-                    update.message.reply_text(not_found_text)
+                    await update.message.reply_text(not_found_text)
                     return None
                 # Смотрим, началась ли подписка
                 if nearest_subscription.subscription_link:
                     chat_link = (
                         nearest_subscription.chat_link
                         if nearest_subscription.chat_link
-                        else LINK_COMING_SOON
+                        else LINK_IS_EMPTY
                     )
-                    update.message.reply_text(
+                    await update.message.reply_text(
                         THESE_ARE_YOUR_LINKS.format(
                             invite_link=nearest_subscription.subscription_link,
                             chat_link=chat_link,
@@ -117,18 +118,18 @@ def get_subscription_link(
                         )
                         return None
                 # Подписка активирована
-                update.message.reply_text(subscription_is_activated)
+                await update.message.reply_text(subscription_is_activated)
                 return None
             # Если номер телефона не передан
             telegram_id = update.message.from_user.id
             user = session.query(User).filter(User.telegram_id == telegram_id).first()
             if not user:
-                update.message.reply_text(
+                await update.message.reply_text(
                     "Напишите номер телефона, который вы ввели при оплате👇🏼, "
                     "либо нажмите 'Отправить номер телефона📞' для автоматической отправки."
                 )
                 return None
-            update.message.reply_text(check_payment_text)
+            await update.message.reply_text(check_payment_text)
             # Смотрим, оплачена ли подписка
             nearest_subscription = (
                 session.query(Subscription)
@@ -137,15 +138,15 @@ def get_subscription_link(
                 .first()
             )
             if not nearest_subscription:
-                update.message.reply_text(not_found_text)
+                await update.message.reply_text(not_found_text)
                 return None
             if nearest_subscription.subscription_link:
                 chat_link = (
                     nearest_subscription.chat_link
                     if nearest_subscription.chat_link
-                    else LINK_COMING_SOON
+                    else LINK_IS_EMPTY
                 )
-                update.message.reply_text(
+                await update.message.reply_text(
                     THESE_ARE_YOUR_LINKS.format(
                         invite_link=nearest_subscription.subscription_link,
                         chat_link=chat_link,
@@ -177,7 +178,7 @@ def get_subscription_link(
                     )
                     return None
             # Подписка активирована
-            update.message.reply_text(subscription_is_activated)
+            await update.message.reply_text(subscription_is_activated)
             session.commit()
         except Exception as error:
             session.rollback()
@@ -189,12 +190,12 @@ def get_subscription_link(
 
 
 # Обработчик сообщения 'Срок действия подписки 🕑'
-def get_subscription_period(update: Update, context: CallbackContext) -> None:
+async def get_subscription_period(update: Update, context: CallbackContext) -> None:
     telegram_id = update.message.from_user.id
     with create_session() as session:
         user_id = session.query(User.id).filter(User.telegram_id == telegram_id).first()
         if not user_id:
-            update.message.reply_text("У тебя нет действующей подписки.")
+            await update.message.reply_text("У тебя нет действующей подписки.")
             return None
         # Получаем самую ближайшую подписку
         nearest_subscription = (
@@ -204,27 +205,26 @@ def get_subscription_period(update: Update, context: CallbackContext) -> None:
             .first()
         )
         if not nearest_subscription:
-            update.message.reply_text("У тебя нет действующей подписки.")
+            await update.message.reply_text("У тебя нет действующей подписки.")
             return None
-        update.message.reply_text(
+        await update.message.reply_text(
             "Срок действия подписки Sensei, for real!?: "
             f"{nearest_subscription.start_datetime.strftime('%d.%m.%Y')}-"
             f"{nearest_subscription.end_datetime.strftime('%d.%m.%Y')}"
         )
         session.commit()
-    Session.remove()  # Удаляем сессию из контекста
     return None
 
 
 # Обработчик сообщения 'Показать привязанный номер 📲'
-def show_linked_phone_number(update: Update, context: CallbackContext) -> None:
+async def show_linked_phone_number(update: Update, context: CallbackContext) -> None:
     telegram_id = update.message.from_user.id
     with create_session() as session:
         user = session.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
-            update.message.reply_text("У тебя нет привязанного номера.")
+            await update.message.reply_text("У тебя нет привязанного номера.")
             return None
-        update.message.reply_text(
+        await update.message.reply_text(
             f"К твоему аккаунту привязан номер: {user.phone_number}"
         )
     Session.remove()  # Удаляем сессию из контекста
@@ -232,8 +232,8 @@ def show_linked_phone_number(update: Update, context: CallbackContext) -> None:
 
 
 # Обработчик сообщения 'Техническая поддержка ⚙️'
-def get_technical_support(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(
+async def get_technical_support(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text(
         "Пожалуйста, обращайся в техническую поддержку:\n"
         "Телеграм: @rogozin_ilya\n"
         "Почта: rogozin.il2399@gmail.com"
@@ -242,23 +242,22 @@ def get_technical_support(update: Update, context: CallbackContext) -> None:
 
 
 # Обработчик сообщения 'Оставить отзыв ✍🏼'
-def write_review(update: Update, context: CallbackContext) -> None:
+async def write_review(update: Update, context: CallbackContext) -> None:
     telegram_id = update.message.from_user.id
     with create_session() as session:
         user = session.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
-            update.message.reply_text(
+            await update.message.reply_text(
                 "К сожалению, ты не можешь оставить отзыв, так как не являешься членом сленг клуба.\n\n"
                 "Мы будем рады, если ты присоединишься к нашему комьюнити и будешь развивать с нами свой английский!"
             )
             return None
-        update.message.reply_text(
+        await update.message.reply_text(
             "Мы стараемся улучшать сленг-клуб каждый день! И будем рады получить твою обратную связь:)\n\n"
             "Пожалуйста, отправляй отзыв одним сообщением! Заранее Благодарим!\n\n"
             "Для отмены отправь '-'."
         )
         context.user_data["awaiting_review"] = True
-    Session.remove()  # Удаляем сессию из контекста
     return None
 
 
@@ -269,8 +268,8 @@ def get_invitation(update: Update, context: CallbackContext) -> None:
 
 
 # Обработчик сообщения 'Демо-версия сленг-клуба 🖼️'
-def get_demo_version_of_club(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(
+async def get_demo_version_of_club(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text(
         "Ма френд, привет!: Ссылка для вступления в демо-версию "
         "сленг-клуба «Sensei, for real!?»: https://t.me/+vynLcyHSc9Y4N2Ji"
     )

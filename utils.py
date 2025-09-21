@@ -1,40 +1,31 @@
 import datetime
-import logging
 import time
+import asyncio
 
 from dateutil.relativedelta import relativedelta
-from telegram import Bot
+from telegram import Bot, Update
 from telegram.ext import CallbackContext
 
-from constants import MONTHS
-from database import Session, Subscription, User
-
-# Включаем логгирование
-logging.basicConfig(
-    filename="bot.log",  # Имя файла для записи логов
-    filemode="a",  # Режим открытия файла, 'a' означает добавление
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
+from constants import MONTHS, MODERATOR_IDS, logger
+from database import Subscription, User, create_session
 
 
 # Функция для удаления пользователя из канала
-def kick_user_from_channel(bot, user_id: int, chat_id: str) -> None:
+async def kick_user_from_channel(bot, user_id: int, chat_id: str) -> None:
     try:
-        bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+        await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
         logger.info(
             f"Пользователь с телеграм id: {user_id} был удалён из канала: {chat_id}"
         )
-        time.sleep(1)
-        bot.unban_chat_member(chat_id=chat_id, user_id=user_id, only_if_banned=True)
+        await asyncio.sleep(1)
+        await bot.unban_chat_member(chat_id=chat_id, user_id=user_id, only_if_banned=True)
     except Exception as error:
         logger.error(f"Ошибка при удалении пользователя: {str(error)}")
     return None
 
 
 # Создаем ссылку на вступление в канал с ограничением действия
-def create_invite_link(
+async def create_invite_link(
     bot: Bot,
     expiration_datetime: datetime.datetime,
     chat_id: str,
@@ -45,17 +36,21 @@ def create_invite_link(
     invite_link = None
     for attempt in range(retries):
         try:
-            invite_link = bot.create_chat_invite_link(
-                chat_id=chat_id, member_limit=1, expire_date=expiration_timestamp
-            ).invite_link
+            chat_invite = await bot.create_chat_invite_link(
+                chat_id=chat_id,
+                member_limit=1,
+                expire_date=expiration_timestamp
+            )
+            invite_link = chat_invite.invite_link
             if invite_link:
+                await asyncio.sleep(1)
                 return invite_link
         except Exception as error:
             logger.error(f"Попытка создать ссылку {attempt + 1} failed: {error}")
             if "Flood control exceeded" in str(error):
-                time.sleep(flood_delay)
+                await asyncio.sleep(flood_delay)
             else:
-                time.sleep(3)  # Ожидание по умолчанию для других ошибок
+                await asyncio.sleep(3)  # Ожидание по умолчанию для других ошибок
     if not invite_link:
         logger.error("Failed to create invite link after multiple attempts")
     return invite_link
@@ -109,15 +104,13 @@ def update_subscription(
                 f"Ошибка при обновлении подписки в update_subscription: {str(error)}"
             )
             session.rollback()
-        finally:
-            Session.remove()  # Удаляем сессию из контекста
     return None
 
 
 # Проверяем присутствие пользователя в канале
-def check_user_in_channel(context: CallbackContext, user_id: int, chat_id: str) -> bool:
+async def check_user_in_channel(context: CallbackContext, user_id: int, chat_id: str) -> bool:
     try:
-        member = context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
         if member.status in {"member", "administrator", "creator"}:
             return True
     except Exception as error:
@@ -125,15 +118,11 @@ def check_user_in_channel(context: CallbackContext, user_id: int, chat_id: str) 
         return False
 
 
-# Функция для создания сессий к БД с обработкой ошибок
-def create_session():
-    retries = 5
-    for i in range(retries):
-        try:
-            session = Session()
-            return session
-        except Exception as error:
-            logger.error(f"Ошибка при создании сессии: {str(error)}")
-            # Экспоненциальная задержка перед повторной попыткой
-            time.sleep(2**i)
-    raise Exception("Не удалось создать сессию после нескольких попыток")
+async def restricted(update: Update) -> bool:
+    """Проверка доступа для модераторов"""
+    user_id = update.effective_user.id
+    if user_id not in MODERATOR_IDS:
+        if update.message:
+            await update.message.reply_text("⛔ У вас нет доступа к этой команде.")
+        return False
+    return True

@@ -12,3 +12,4 @@ Bot for English slang club channel in telegram. Можно посмотреть 
 - PostgreSQL
 - APScheduler
 - Pandas
+- Asyncio
