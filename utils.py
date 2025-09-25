@@ -57,7 +57,7 @@ async def create_invite_link(
 
 
 # Логика обновления подписки
-def update_subscription(
+async def update_subscription(
     paid_months: int, phone_number: str, start_month: int, start_year: int, tg: str
 ) -> None:
     start_datetime = datetime.datetime(

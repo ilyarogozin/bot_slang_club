@@ -160,7 +160,12 @@ async def give_free_subscription(update: Update, context: CallbackContext) -> No
         )
         return None
     # Даём пользователю бесплатную подписку
-    update_subscription(months, phone_number, start_month, start_year, "-")
+    try:
+        await update_subscription(months, phone_number, start_month, start_year, "-")
+    except Exception as e:
+        logger.error(f"Ошибка в give_free_subscription: {e}")
+        await update.message.reply_text(f"Ошибка: {e}")
+        return None
     # Отвечаем, что всё прошло успешно
     await update.message.reply_text(
         f"Пользователю с номером {phone_number} была предоставлена подписка на {months} месяцев, "

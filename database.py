@@ -37,7 +37,7 @@ class User(Base):
     telegram_id = Column(BigInteger, unique=True, nullable=True)
     phone_number = Column(String, unique=True, nullable=False)
     user_link = Column(String, nullable=True)
-    messages_acceptable = Column(Boolean, nullable=False, default="true")
+    messages_acceptable = Column(Boolean, nullable=False, default=True)
 
     subscriptions = relationship(
         "Subscription", back_populates="user", cascade="all, delete-orphan"

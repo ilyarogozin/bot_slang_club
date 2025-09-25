@@ -81,7 +81,7 @@ def telegram_webhook():
 
 # Обработчик вебхука для уведомлений об оплате от Tilda
 @app.route(f"/{PAYMENT_WEBHOOK}/", methods=["POST"])
-def payment_webhook():
+async def payment_webhook():
     try:
         # Получаем ключ из заголовков запроса
         logger.info(f"Got webhook request headrs: {request.headers}")
@@ -132,7 +132,7 @@ def payment_webhook():
         tg = data.get("tg")
         tg = tg[1:] if tg.startswith("@") else tg
         # Обновляем подписку в соответствии с условиями
-        update_subscription(
+        await update_subscription(
             int(amount_months), phone_number, int(
                 start_month), int(start_year), tg
         )
