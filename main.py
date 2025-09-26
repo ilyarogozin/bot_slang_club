@@ -89,7 +89,7 @@ async def payment_webhook():
         # Сравниваем полученный ключ с ожидаемым
         if payment_key != PAYMENT_KEY:
             return (jsonify({"status": "failure", "message": "Invalid key"}), 400)
-        data = request.json
+        data = request.get_json()
         logger.info(f"Got webhook request body: {data}")
         phone_number = data.get("Phone")
         if not phone_number:
@@ -388,7 +388,16 @@ def main() -> None:
     application.add_handler(handler_delete_subscription)
     application.add_handler(handler_free_subscription)
 
-    threading.Thread(target=lambda: app.run(port=5001, debug=False)).start()
+    thread = threading.Thread(
+        target=lambda: app.run(
+            port=5001,
+            debug=False,
+            threaded=True,
+            use_reloader=False
+        )
+    )
+    thread.daemon = True
+    thread.start()
     application.run_polling()
 
 
