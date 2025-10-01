@@ -99,10 +99,10 @@ async def get_subscription_link(
                     and 12 <= now.hour < 18
                     and nearest_subscription.start_datetime <= now
                 ):
-                    invite_link = create_invite_link(
+                    invite_link = await create_invite_link(
                         context.bot, nearest_subscription.end_datetime, CHANNEL_ID
                     )
-                    chat_link = create_invite_link(
+                    chat_link = await create_invite_link(
                         context.bot, nearest_subscription.end_datetime, CHAT_ID
                     )
                     # Присваиваем инвайт конкретному пользователю
@@ -110,7 +110,7 @@ async def get_subscription_link(
                         nearest_subscription.subscription_link = invite_link
                         session.commit()
                         # Отправляем текст с инвайтом
-                        context.bot.send_message(
+                        await context.bot.send_message(
                             chat_id=user.telegram_id,
                             text=TEXT_INVITATION.format(
                                 invite_link=invite_link, chat_link=chat_link
@@ -159,10 +159,10 @@ async def get_subscription_link(
                 and 12 <= now.hour < 18
                 and nearest_subscription.start_datetime <= now
             ):
-                invite_link = create_invite_link(
+                invite_link = await create_invite_link(
                     context.bot, nearest_subscription.end_datetime, CHANNEL_ID
                 )
-                chat_link = create_invite_link(
+                chat_link = await create_invite_link(
                     context.bot, nearest_subscription.end_datetime, CHAT_ID
                 )
                 # Присваиваем инвайт конкретному пользователю
@@ -170,7 +170,7 @@ async def get_subscription_link(
                     nearest_subscription.subscription_link = invite_link
                     session.commit()
                     # Отправляем текст с инвайтом
-                    context.bot.send_message(
+                    await context.bot.send_message(
                         chat_id=telegram_id,
                         text=TEXT_INVITATION.format(
                             invite_link=invite_link, chat_link=chat_link
